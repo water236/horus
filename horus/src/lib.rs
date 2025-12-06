@@ -69,15 +69,24 @@ pub mod prelude {
     // ============================================
     pub use horus_core::scheduling::{
         // BlackBox flight recorder
-        BlackBox, BlackBoxEvent,
+        BlackBox,
+        BlackBoxEvent,
         // Checkpointing
-        Checkpoint, CheckpointManager,
-        // Redundancy/TMR voting
-        RedundancyManager, VoteResult, VotingStrategy,
-        // Safety monitoring
-        SafetyMonitor, SafetyState, SafetyStats, WCETEnforcer, Watchdog,
+        Checkpoint,
+        CheckpointManager,
         // Circuit breaker
-        CircuitBreaker, CircuitState,
+        CircuitBreaker,
+        CircuitState,
+        // Redundancy/TMR voting
+        RedundancyManager,
+        // Safety monitoring
+        SafetyMonitor,
+        SafetyState,
+        SafetyStats,
+        VoteResult,
+        VotingStrategy,
+        WCETEnforcer,
+        Watchdog,
     };
 
     // ============================================
@@ -145,14 +154,8 @@ pub mod prelude {
     // Algorithms
     // ============================================
     pub use horus_library::algorithms::{
-        astar::AStar,
-        differential_drive::DifferentialDrive,
-        ekf::EKF,
-        kalman_filter::KalmanFilter,
-        occupancy_grid::OccupancyGrid,
-        pid::PID,
-        pure_pursuit::PurePursuit,
-        rrt::RRT,
+        astar::AStar, differential_drive::DifferentialDrive, ekf::EKF, kalman_filter::KalmanFilter,
+        occupancy_grid::OccupancyGrid, pid::PID, pure_pursuit::PurePursuit, rrt::RRT,
     };
 
     // ============================================
@@ -185,14 +188,8 @@ pub mod prelude {
     // Built-in Nodes (standard-nodes feature)
     // ============================================
     pub use horus_library::nodes::{
-        DifferentialDriveNode,
-        EmergencyStopNode,
-        JoystickInputNode,
-        KeyboardInputNode,
-        LocalizationNode,
-        PathPlannerNode,
-        PidControllerNode,
-        SerialNode,
+        DifferentialDriveNode, EmergencyStopNode, JoystickInputNode, KeyboardInputNode,
+        LocalizationNode, PathPlannerNode, PidControllerNode, SerialNode,
     };
 
     // ============================================

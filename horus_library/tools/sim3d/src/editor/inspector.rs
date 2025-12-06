@@ -1,11 +1,13 @@
 //! Entity inspector panel for viewing and editing component properties
+//!
+//! Note: This is legacy code. For the new visual-first UX, see property_editor.rs
 
 use super::{
     selection::Selection,
     undo::{TransformOperation, UndoStack},
     EditorState,
 };
-use crate::physics::rigid_body::Velocity;
+use crate::physics::rigid_body::{Mass, Velocity};
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
@@ -18,11 +20,11 @@ pub fn inspector_panel_system(
     mut transforms: Query<&mut Transform>,
     names: Query<&Name>,
     velocities: Query<&Velocity>,
-    mass_properties: Query<&ReadMassProperties>,
+    mass_query: Query<&Mass>,
     mut visibilities: Query<&mut Visibility>,
-    material_query: Query<(&Handle<StandardMaterial>,)>,
+    material_query: Query<&MeshMaterial3d<StandardMaterial>>,
     materials: Res<Assets<StandardMaterial>>,
-    mesh_query: Query<&Handle<Mesh>>,
+    mesh_query: Query<&Mesh3d>,
     point_lights: Query<&PointLight>,
     directional_lights: Query<&DirectionalLight>,
     spot_lights: Query<&SpotLight>,
@@ -63,7 +65,7 @@ pub fn inspector_panel_system(
                         &names,
                         &velocities,
                         &mut undo_stack,
-                        &mass_properties,
+                        &mass_query,
                         &mut visibilities,
                         &material_query,
                         &materials,
@@ -93,11 +95,11 @@ fn show_entity_inspector(
     names: &Query<&Name>,
     velocities: &Query<&Velocity>,
     undo_stack: &mut UndoStack,
-    mass_properties: &Query<&ReadMassProperties>,
+    mass_query: &Query<&Mass>,
     visibilities: &mut Query<&mut Visibility>,
-    material_query: &Query<(&Handle<StandardMaterial>,)>,
+    material_query: &Query<&MeshMaterial3d<StandardMaterial>>,
     materials: &Res<Assets<StandardMaterial>>,
-    mesh_query: &Query<&Handle<Mesh>>,
+    mesh_query: &Query<&Mesh3d>,
     point_lights: &Query<&PointLight>,
     directional_lights: &Query<&DirectionalLight>,
     spot_lights: &Query<&SpotLight>,
@@ -185,7 +187,7 @@ fn show_entity_inspector(
                 ui.add(
                     egui::DragValue::new(&mut scale.x)
                         .speed(0.01)
-                        .clamp_range(0.01..=100.0),
+                        .range(0.01..=100.0),
                 );
             });
             ui.horizontal(|ui| {
@@ -193,7 +195,7 @@ fn show_entity_inspector(
                 ui.add(
                     egui::DragValue::new(&mut scale.y)
                         .speed(0.01)
-                        .clamp_range(0.01..=100.0),
+                        .range(0.01..=100.0),
                 );
             });
             ui.horizontal(|ui| {
@@ -201,7 +203,7 @@ fn show_entity_inspector(
                 ui.add(
                     egui::DragValue::new(&mut scale.z)
                         .speed(0.01)
-                        .clamp_range(0.01..=100.0),
+                        .range(0.01..=100.0),
                 );
             });
 
@@ -235,31 +237,17 @@ fn show_entity_inspector(
     // Additional component inspectors
     ui.add_space(10.0);
 
-    // Mass properties component
-    if let Ok(mass_props) = mass_properties.get(entity) {
+    // Mass component
+    if let Ok(mass) = mass_query.get(entity) {
         ui.collapsing("Mass Properties", |ui| {
-            ui.label(format!("Mass: {:.2} kg", mass_props.mass()));
-
-            if let Some(center) = mass_props.local_center_of_mass() {
-                ui.label(format!(
-                    "Center of Mass: [{:.2}, {:.2}, {:.2}]",
-                    center.x, center.y, center.z
-                ));
-            }
-
-            ui.label(format!(
-                "Principal Inertia: [{:.3}, {:.3}, {:.3}]",
-                mass_props.principal_inertia().x,
-                mass_props.principal_inertia().y,
-                mass_props.principal_inertia().z
-            ));
+            ui.label(format!("Mass: {:.2} kg", mass.mass));
         });
     }
 
     // Visibility component
     if let Ok(mut visibility) = visibilities.get_mut(entity) {
         ui.collapsing("Visibility", |ui| {
-            let mut is_visible = visibility.is_visible();
+            let mut is_visible = matches!(*visibility, Visibility::Visible | Visibility::Inherited);
             if ui.checkbox(&mut is_visible, "Visible").changed() {
                 *visibility = if is_visible {
                     Visibility::Visible
@@ -271,8 +259,8 @@ fn show_entity_inspector(
     }
 
     // Material component (if using StandardMaterial)
-    if let Ok((material_handle, materials)) = material_query.get(entity) {
-        if let Some(material) = materials.get(material_handle) {
+    if let Ok(material_handle) = material_query.get(entity) {
+        if let Some(material) = materials.get(&material_handle.0) {
             ui.collapsing("Material", |ui| {
                 ui.label("Base Color:");
                 let color = material.base_color.to_srgba();
@@ -310,7 +298,7 @@ fn show_entity_inspector(
     // Mesh component info
     if let Ok(mesh_handle) = mesh_query.get(entity) {
         ui.collapsing("Mesh", |ui| {
-            ui.label(format!("Mesh Handle: {:?}", mesh_handle));
+            ui.label(format!("Mesh Handle: {:?}", mesh_handle.0));
             // Additional mesh info would require access to mesh assets
         });
     }
@@ -394,7 +382,9 @@ fn show_entity_inspector(
 
             // Clear color
             match &camera.clear_color {
-                ClearColorConfig::Default => ui.label("Clear: Default"),
+                ClearColorConfig::Default => {
+                    ui.label("Clear: Default");
+                }
                 ClearColorConfig::Custom(color) => {
                     let srgba = color.to_srgba();
                     ui.label(format!(
@@ -402,8 +392,10 @@ fn show_entity_inspector(
                         srgba.red, srgba.green, srgba.blue, srgba.alpha
                     ));
                 }
-                ClearColorConfig::None => ui.label("Clear: None"),
-            };
+                ClearColorConfig::None => {
+                    ui.label("Clear: None");
+                }
+            }
         });
     }
 }

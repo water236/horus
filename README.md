@@ -178,6 +178,84 @@ See [Built-in Nodes Documentation](horus_library/nodes/README.md) for complete c
 - **Performance Benchmarks**: Comprehensive latency testing
 - **Dashboard Monitoring**: Web UI for real-time system monitoring
 
+## Network Communication
+
+HORUS supports **distributed multi-machine systems** with the same simple API. Just add `@address` to your topic name:
+
+```rust
+// Local (shared memory) - 87-313ns latency
+let local_hub: Hub<SensorData> = Hub::new("sensors")?;
+
+// Network (TCP/UDP) - 5-50µs latency
+let network_hub: Hub<SensorData> = Hub::new("sensors@192.168.1.100:8000")?;
+
+// Link also supports network endpoints
+let producer: Link<Command> = Link::producer("commands@robot.local:9000")?;
+let consumer: Link<Command> = Link::consumer("commands@0.0.0.0:9000")?;
+```
+
+### Network Features
+
+| Backend | Latency | Use Case |
+|---------|---------|----------|
+| **Link (TCP)** | 5-15µs | Point-to-point, reliable delivery |
+| **Hub (UDP)** | <50µs | Pub/sub, broadcasting |
+| **QUIC** | ~1ms | WAN, NAT traversal, encryption |
+| **io_uring** | 3-5µs | Linux ultra-low latency |
+
+**Multi-Machine Example:**
+```rust
+// Robot (192.168.1.50) - publishes telemetry
+let telemetry: Hub<Status> = Hub::new("telemetry@192.168.1.100:8000")?;
+
+// Ground Station (192.168.1.100) - receives telemetry
+let telemetry: Hub<Status> = Hub::new("telemetry@0.0.0.0:8000")?;
+```
+
+Enable optional backends in `Cargo.toml`:
+```toml
+horus_core = { version = "0.1", features = ["quic", "io-uring-net"] }
+```
+
+See [Network Communication Docs](https://docs.horus-registry.dev/core-concepts/network-communication) for complete guide.
+
+## Package Management
+
+HORUS includes a built-in package registry for sharing and reusing nodes:
+
+```bash
+# Search available packages
+horus pkg list --search lidar
+
+# Install a package
+horus pkg install sensor-fusion
+
+# List installed packages
+horus pkg list
+
+# Publish your own package
+horus pkg publish
+```
+
+### Package Commands
+
+| Command | Description |
+|---------|-------------|
+| `horus pkg install <name>` | Install package from registry |
+| `horus pkg remove <name>` | Remove installed package |
+| `horus pkg list` | List installed packages |
+| `horus pkg list --search <query>` | Search registry |
+| `horus pkg publish` | Publish package to registry |
+| `horus pkg plugins` | List installed plugins |
+| `horus pkg enable/disable` | Enable/disable plugins |
+
+Packages are installed to `~/.horus/cache/` and can include:
+- **Nodes** - Reusable sensor drivers, controllers, algorithms
+- **Messages** - Custom message type definitions
+- **Plugins** - Extensions for the HORUS CLI
+
+See [Package Management Docs](https://docs.horus-registry.dev/package-management) for complete guide.
+
 ## Installation
 
 ### Prerequisites

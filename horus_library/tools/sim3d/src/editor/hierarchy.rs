@@ -2,10 +2,9 @@
 
 use super::{
     selection::{Selectable, Selection},
-    undo::{DeleteOperation, EntitySnapshot, UndoStack},
+    undo::{DeleteOperation, UndoStack},
     EditorState,
 };
-use bevy::ecs::entity::EntityHashMap;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use std::collections::HashSet;
@@ -123,13 +122,14 @@ fn show_entity_tree(
 ) {
     let indent = depth as f32 * 16.0;
 
+    // Check collapse state before the closure (scope fix)
+    let has_children = children_opt.map_or(false, |c| !c.is_empty());
+    let is_collapsed = collapse_state.is_collapsed(entity);
+
     ui.horizontal(|ui| {
         ui.add_space(indent);
 
         // Show expand/collapse arrow if has children
-        let has_children = children_opt.map_or(false, |c| !c.is_empty());
-        let is_collapsed = collapse_state.is_collapsed(entity);
-
         if has_children {
             let arrow = if is_collapsed { "▶" } else { "▼" };
             if ui.button(arrow).clicked() {

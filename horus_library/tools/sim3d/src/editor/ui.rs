@@ -57,7 +57,7 @@ fn toolbar_ui(ui: &mut egui::Ui, state: &mut EditorState) {
             ui.add(
                 egui::DragValue::new(&mut state.grid_size)
                     .speed(0.01)
-                    .clamp_range(0.01..=10.0)
+                    .range(0.01..=10.0)
                     .prefix("Size: "),
             );
         }

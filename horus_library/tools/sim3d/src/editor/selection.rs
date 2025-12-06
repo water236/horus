@@ -7,7 +7,7 @@ use rapier3d::prelude::*;
 use std::collections::HashSet;
 
 /// Marker component for selectable entities
-#[derive(Component, Reflect, Default)]
+#[derive(Component, Reflect, Default, Clone)]
 #[reflect(Component)]
 pub struct Selectable {
     /// Display name in the editor

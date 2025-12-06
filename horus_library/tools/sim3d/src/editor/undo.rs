@@ -1,6 +1,5 @@
 //! Undo/redo system for editor operations
 
-use bevy::ecs::entity::EntityHashMap;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -192,7 +191,7 @@ pub struct SerializedComponent {
 impl EntitySnapshot {
     /// Create a snapshot from an entity in the world
     pub fn from_entity(entity: Entity, world: &World) -> Option<Self> {
-        let entity_ref = world.get_entity(entity)?;
+        let entity_ref = world.get_entity(entity).ok()?;
 
         // Capture standard components
         let transform = entity_ref.get::<Transform>().cloned();
@@ -221,6 +220,11 @@ impl EntitySnapshot {
 
     /// Restore entity from snapshot
     pub fn restore(&self, world: &mut World) -> Entity {
+        // Check parent existence first (before spawning takes mutable borrow)
+        let valid_parent = self
+            .parent
+            .filter(|&parent_entity| world.get_entity(parent_entity).is_ok());
+
         let mut entity_commands = world.spawn_empty();
         let new_entity = entity_commands.id();
 
@@ -239,11 +243,9 @@ impl EntitySnapshot {
 
         // Note: GlobalTransform is computed, not inserted directly
 
-        // Restore hierarchy
-        if let Some(parent_entity) = self.parent {
-            if world.get_entity(parent_entity).is_some() {
-                entity_commands.set_parent(parent_entity);
-            }
+        // Restore hierarchy (parent was validated above)
+        if let Some(parent_entity) = valid_parent {
+            entity_commands.set_parent(parent_entity);
         }
 
         new_entity
@@ -373,26 +375,32 @@ pub fn undo_keyboard_system(
 /// Exclusive system to process undo events
 pub fn process_undo_system(world: &mut World) {
     // Check for undo events
-    let mut should_undo = false;
-    {
+    let should_undo = {
         let events = world.resource::<Events<UndoEvent>>();
-        let mut reader = events.get_reader();
-        should_undo = reader.read(events).next().is_some();
-    }
+        let mut cursor = events.get_cursor();
+        cursor.read(events).next().is_some()
+    };
 
     if should_undo {
-        // Perform undo operation
-        let mut undo_stack = world.resource_mut::<UndoStack>();
-        if undo_stack.can_undo() {
-            // We need to temporarily take the stack to avoid borrow conflicts
-            let mut temp_stack = std::mem::take(&mut *undo_stack);
-            temp_stack.undo(world);
-            *undo_stack = temp_stack;
+        // Take the stack out to avoid borrow conflicts
+        let can_undo = {
+            let undo_stack = world.resource::<UndoStack>();
+            undo_stack.can_undo()
+        };
 
-            info!(
-                "Undo performed: {}",
-                undo_stack.undo_description().unwrap_or("Unknown operation")
-            );
+        if can_undo {
+            let mut temp_stack = world.resource_mut::<UndoStack>();
+            let mut stack = std::mem::take(&mut *temp_stack);
+            drop(temp_stack); // Release the borrow
+
+            stack.undo(world);
+
+            let description = stack.undo_description().map(|s| s.to_string());
+            *world.resource_mut::<UndoStack>() = stack;
+
+            if let Some(desc) = description {
+                info!("Undo performed: {}", desc);
+            }
         }
     }
 }
@@ -400,45 +408,50 @@ pub fn process_undo_system(world: &mut World) {
 /// Exclusive system to process redo events
 pub fn process_redo_system(world: &mut World) {
     // Check for redo events
-    let mut should_redo = false;
-    {
+    let should_redo = {
         let events = world.resource::<Events<RedoEvent>>();
-        let mut reader = events.get_reader();
-        should_redo = reader.read(events).next().is_some();
-    }
+        let mut cursor = events.get_cursor();
+        cursor.read(events).next().is_some()
+    };
 
     if should_redo {
-        // Perform redo operation
-        let mut undo_stack = world.resource_mut::<UndoStack>();
-        if undo_stack.can_redo() {
-            // We need to temporarily take the stack to avoid borrow conflicts
-            let mut temp_stack = std::mem::take(&mut *undo_stack);
-            temp_stack.redo(world);
-            *undo_stack = temp_stack;
+        // Take the stack out to avoid borrow conflicts
+        let can_redo = {
+            let undo_stack = world.resource::<UndoStack>();
+            undo_stack.can_redo()
+        };
 
-            info!(
-                "Redo performed: {}",
-                undo_stack.redo_description().unwrap_or("Unknown operation")
-            );
+        if can_redo {
+            let mut temp_stack = world.resource_mut::<UndoStack>();
+            let mut stack = std::mem::take(&mut *temp_stack);
+            drop(temp_stack); // Release the borrow
+
+            stack.redo(world);
+
+            let description = stack.redo_description().map(|s| s.to_string());
+            *world.resource_mut::<UndoStack>() = stack;
+
+            if let Some(desc) = description {
+                info!("Redo performed: {}", desc);
+            }
         }
     }
 }
 
 /// Exclusive system to execute new operations
 pub fn execute_operation_system(world: &mut World) {
-    // Collect all pending operations
-    let mut operations_to_execute = Vec::new();
-    {
+    // Check for pending operations
+    let has_operations = {
         let events = world.resource::<Events<ExecuteOperationEvent>>();
-        let mut reader = events.get_reader();
-        for event in reader.read(events) {
-            // We can't move out of the event, so we'll need another approach
-            // This is a limitation we need to work around
-        }
-    }
+        let mut cursor = events.get_cursor();
+        cursor.read(events).next().is_some()
+    };
 
-    // For now, we'll process operations directly when they're created
-    // In a real implementation, you'd want to queue them properly
+    if has_operations {
+        // For now, we'll process operations directly when they're created
+        // In a real implementation, you'd want to queue them properly
+        info!("Execute operation event received");
+    }
 }
 
 /// Plugin to add undo/redo functionality

@@ -5,6 +5,10 @@ import { Breadcrumb } from '@/components/Breadcrumb';
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 
+// Only serve pre-rendered pages - return 404 for unknown paths
+// This ensures Vercel properly serves all static pages
+export const dynamicParams = false;
+
 interface PageProps {
   params: {
     slug: string[];
