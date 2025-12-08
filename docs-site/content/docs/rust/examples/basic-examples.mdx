@@ -141,33 +141,17 @@ fn main() -> Result<()> {
 
 **Run it**:
 
-> **IMPORTANT - Multi-Process Communication**
->
-> To run publisher and subscriber in separate terminals, you **must** configure a shared `session_id` in `horus.yaml`:
->
-> ```yaml
-> name: my_project
-> version: 0.1.0
-> session_id: "my-shared-session"  # Required for multi-process!
->
-> dependencies:
->   - horus@0.1.0
-> ```
->
-> Without this, each `horus run` creates a different session and nodes cannot communicate.
->
-> **Alternative**: Run both together with glob pattern (no session_id needed):
-> ```bash
-> horus run "*.rs"  # Auto-shares session
-> ```
+HORUS uses a **flat namespace** (like ROS), so processes automatically share topics:
 
 ```bash
 # Terminal 1
 horus run publisher.rs
 
-# Terminal 2
+# Terminal 2 (automatically connects!)
 horus run subscriber.rs
 ```
+
+Both use the same topic name (`"sensor_data"`) → communication works automatically!
 
 ### Combined Application
 

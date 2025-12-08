@@ -71,12 +71,8 @@ impl SimMonitor {
 
 impl Default for SimMonitor {
     fn default() -> Self {
-        // Create a unique name based on session ID if available
-        let node_name = if let Ok(session_id) = std::env::var("HORUS_SESSION_ID") {
-            format!("sim3d.{}", session_id)
-        } else {
-            "sim3d".to_string()
-        };
+        // Use PID to create unique node name (session IDs no longer used)
+        let node_name = format!("sim3d.{}", std::process::id());
         Self::new(node_name)
     }
 }

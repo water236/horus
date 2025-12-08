@@ -45,7 +45,7 @@
 //! ```
 
 use crate::error::{HorusError, HorusResult};
-use crate::memory::platform::shm_global_dir;
+use crate::memory::platform::shm_base_dir;
 use crate::memory::tensor_pool::{TensorDevice, TensorDtype, MAX_TENSOR_DIMS};
 use memmap2::{MmapMut, MmapOptions};
 use std::collections::HashMap;
@@ -209,7 +209,7 @@ impl CudaTensorPool {
         cuda_ffi::set_device(device_id)
             .map_err(|e| HorusError::Config(format!("Failed to set CUDA device: {}", e)))?;
 
-        let shm_dir = shm_global_dir();
+        let shm_dir = shm_base_dir().join("cuda");
         std::fs::create_dir_all(&shm_dir)?;
 
         let shm_path = shm_dir.join(format!("cuda_pool_{}_{}", pool_id, device_id));
@@ -261,7 +261,7 @@ impl CudaTensorPool {
         cuda_ffi::set_device(device_id)
             .map_err(|e| HorusError::Config(format!("Failed to set CUDA device: {}", e)))?;
 
-        let shm_dir = shm_global_dir();
+        let shm_dir = shm_base_dir().join("cuda");
         let shm_path = shm_dir.join(format!("cuda_pool_{}_{}", pool_id, device_id));
 
         if !shm_path.exists() {

@@ -40,9 +40,12 @@ pub struct Cli {
     #[arg(long, default_value_t = 1.0)]
     pub speed: f32,
 
-    /// HORUS session ID to join (uses HORUS_SESSION_ID env var if not specified)
-    /// Topics will be isolated to this session's shared memory namespace
-    #[arg(long)]
+    /// HORUS session ID (deprecated - ignored, all topics use flat namespace)
+    ///
+    /// **Deprecated**: Session IDs are no longer used. All topics now use a flat
+    /// global namespace (ROS-like). This option is kept for backwards compatibility
+    /// but has no effect.
+    #[arg(long, hide = true)]
     pub session: Option<String>,
 
     /// Robot name for HORUS topics (default: sim3d_robot)

@@ -4,7 +4,7 @@ use crate::version;
 use anyhow::{anyhow, bail, Context, Result};
 use colored::*;
 use glob::glob;
-use horus_core::memory::shm_session_dir;
+use horus_core::params::RuntimeParams;
 use std::collections::HashSet;
 use std::env;
 use std::fs;
@@ -15,7 +15,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 enum ExecutionTarget {
@@ -534,6 +533,17 @@ pub fn execute_run(
         clean_build_cache()?;
     }
 
+    // Clean up stale topics from previous runs to prevent data corruption
+    // Only removes topics with no live processes AND 5+ minutes old
+    crate::discovery::cleanup_stale_topics();
+
+    // Load runtime parameters from params.yaml if it exists
+    // Supported locations (in priority order):
+    // 1. ./params.yaml (project root)
+    // 2. ./config/params.yaml
+    // 3. .horus/config/params.yaml (created by `horus param`)
+    load_params_from_project()?;
+
     let mode = if release { "release" } else { "debug" };
     eprintln!(
         "{} Starting HORUS runtime in {} mode...",
@@ -578,13 +588,6 @@ fn execute_single_file(
     release: bool,
     clean: bool,
 ) -> Result<()> {
-    // Try to read session_id from horus.yaml, otherwise generate unique session ID
-    let session_id = parse_session_id_from_horus_yaml("horus.yaml")
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
-    env::set_var("HORUS_SESSION_ID", &session_id);
-
     let language = detect_language(&file_path)?;
 
     eprintln!(
@@ -593,7 +596,6 @@ fn execute_single_file(
         file_path.display().to_string().green(),
         language.yellow()
     );
-    eprintln!("  {} Session: {}", "".dimmed(), session_id.dimmed());
 
     // Load ignore patterns from horus.yaml if it exists
     let ignore = if Path::new("horus.yaml").exists() {
@@ -657,9 +659,6 @@ fn execute_single_file(
     // Execute
     eprintln!("{} Executing...\n", "".cyan());
     execute_with_scheduler(file_path, language, args, release, clean)?;
-
-    // Clean up session directory
-    cleanup_session(&session_id)?;
 
     Ok(())
 }
@@ -838,16 +837,11 @@ fn execute_multiple_files(
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
-    // Generate unique session ID for this run
-    let session_id = Uuid::new_v4().to_string();
-    env::set_var("HORUS_SESSION_ID", &session_id);
-
     println!(
         "{} Executing {} files concurrently:",
         "".cyan(),
         file_paths.len()
     );
-    println!("  {} Session: {}", "".dimmed(), session_id.dimmed());
 
     for (i, file_path) in file_paths.iter().enumerate() {
         let language = detect_language(file_path)?;
@@ -1034,26 +1028,6 @@ fn execute_multiple_files(
         println!("\n{} All processes stopped.", "".green());
     } else {
         println!("\n{} All processes completed.", "".green());
-    }
-
-    // Clean up session directory
-    cleanup_session(&session_id)?;
-
-    Ok(())
-}
-
-/// Clean up session-isolated shared memory directories
-fn cleanup_session(session_id: &str) -> Result<()> {
-    let session_dir = shm_session_dir(session_id);
-
-    if session_dir.exists() {
-        fs::remove_dir_all(&session_dir).with_context(|| {
-            format!(
-                "Failed to clean up session directory: {}",
-                session_dir.display()
-            )
-        })?;
-        println!("{} Cleaned up session memory", "".dimmed());
     }
 
     Ok(())
@@ -2519,12 +2493,27 @@ pub fn driver_to_features(driver: &str, backend: Option<&str>) -> Vec<String> {
 /// Get Cargo features to enable based on driver configuration
 ///
 /// Reads driver config and returns a list of Cargo features to pass to `cargo build --features`.
+/// For known built-in drivers, uses the hardcoded mapping.
+/// For unknown drivers, queries the HORUS registry for required features.
 pub fn get_cargo_features_from_drivers(config: &DriverConfig) -> Vec<String> {
     let mut features = Vec::new();
 
     for driver in &config.drivers {
         let backend = config.backends.get(driver).map(|s| s.as_str());
         let driver_features = driver_to_features(driver, backend);
+
+        if driver_features.is_empty() {
+            // Try registry lookup for unknown drivers
+            if let Some(registry_features) = query_registry_for_driver_features(driver, backend) {
+                for f in registry_features {
+                    if !features.contains(&f) {
+                        features.push(f);
+                    }
+                }
+                continue;
+            }
+        }
+
         for f in driver_features {
             if !features.contains(&f) {
                 features.push(f);
@@ -2533,6 +2522,23 @@ pub fn get_cargo_features_from_drivers(config: &DriverConfig) -> Vec<String> {
     }
 
     features
+}
+
+/// Query the HORUS registry for driver features
+/// Used as fallback when driver_to_features() returns empty for unknown drivers
+fn query_registry_for_driver_features(driver: &str, backend: Option<&str>) -> Option<Vec<String>> {
+    use crate::registry::RegistryClient;
+
+    // Construct driver name for lookup
+    let driver_name = if let Some(b) = backend {
+        format!("{}-{}", driver, b)
+    } else {
+        driver.to_string()
+    };
+
+    // Try to query registry (silent failure - returns None if registry unreachable)
+    let client = RegistryClient::new();
+    client.query_driver_features(&driver_name)
 }
 
 /// Get features string for cargo build command
@@ -4750,27 +4756,6 @@ fn parse_horus_yaml_dependencies_from_content(content: &str) -> Result<HashSet<S
     Ok(dependencies)
 }
 
-/// Parse session_id from horus.yaml
-/// Returns Ok(Some(session_id)) if found, Ok(None) if not found, Err if file error
-fn parse_session_id_from_horus_yaml(path: &str) -> Result<Option<String>> {
-    if !Path::new(path).exists() {
-        return Ok(None);
-    }
-
-    let content = fs::read_to_string(path)?;
-
-    // Try parsing as YAML first
-    if let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
-        if let Some(session_id_value) = yaml.get("session_id") {
-            if let Some(session_id) = session_id_value.as_str() {
-                return Ok(Some(session_id.to_string()));
-            }
-        }
-    }
-
-    Ok(None)
-}
-
 /// Detect hardware nodes being used and check if hardware support is properly configured
 pub fn check_hardware_requirements(file_path: &Path, language: &str) -> Result<()> {
     // Only check Rust files for now
@@ -5010,4 +4995,48 @@ fn check_device_exists(pattern: &str) -> bool {
         }
     }
     false
+}
+
+/// Load runtime parameters from project files
+///
+/// Searches for params.yaml in the following locations (in priority order):
+/// 1. `./params.yaml` - Project root (most common)
+/// 2. `./config/params.yaml` - Config subdirectory (ROS-style)
+/// 3. `.horus/config/params.yaml` - HORUS cache (created by `horus param`)
+///
+/// If found, loads parameters into RuntimeParams which will be available
+/// to all nodes during execution.
+fn load_params_from_project() -> Result<()> {
+    let params_locations = [
+        PathBuf::from("params.yaml"),
+        PathBuf::from("config/params.yaml"),
+        PathBuf::from(".horus/config/params.yaml"),
+    ];
+
+    // Find the first existing params file
+    let params_file = params_locations.iter().find(|p| p.exists());
+
+    if let Some(path) = params_file {
+        // Initialize RuntimeParams (will also load from .horus/config/params.yaml if exists)
+        let params = RuntimeParams::init().map_err(|e| anyhow!("Failed to init params: {}", e))?;
+
+        // Load from the found file
+        params
+            .load_from_disk(path)
+            .map_err(|e| anyhow!("Failed to load params from {}: {}", path.display(), e))?;
+
+        // Count parameters loaded
+        let count = params.get_all().len();
+
+        if count > 0 {
+            eprintln!(
+                "{} Loaded {} parameters from {}",
+                "".cyan(),
+                count.to_string().green(),
+                path.display().to_string().cyan()
+            );
+        }
+    }
+
+    Ok(())
 }

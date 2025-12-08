@@ -51,6 +51,9 @@ impl Default for CmdVel {
 unsafe impl bytemuck::Pod for CmdVel {}
 unsafe impl bytemuck::Zeroable for CmdVel {}
 
+// Enable ultra-fast POD messaging (~50ns vs ~250ns with bincode)
+unsafe impl horus_core::communication::PodMessage for CmdVel {}
+
 // LogSummary implementation for zero-copy logging
 impl LogSummary for CmdVel {
     fn log_summary(&self) -> String {

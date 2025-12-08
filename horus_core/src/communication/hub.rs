@@ -282,28 +282,6 @@ impl<
         }
     }
 
-    /// Create a new global Hub (accessible across all sessions)
-    pub fn new_global(topic_name: &str) -> HorusResult<Self> {
-        Self::new_global_with_capacity(topic_name, 1024)
-    }
-
-    /// Create a new global Hub with custom capacity (accessible across all sessions)
-    ///
-    /// Note: Global hubs currently only support local shared memory
-    pub fn new_global_with_capacity(topic_name: &str, capacity: usize) -> HorusResult<Self> {
-        let shm_topic = Arc::new(ShmTopic::new_global(topic_name, capacity)?);
-
-        Ok(Hub {
-            shm_topic,
-            network: None,
-            is_network: false,
-            topic_name: topic_name.to_string(),
-            state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
-            metrics: Arc::new(AtomicHubMetrics::default()),
-            _padding: [0; 14],
-        })
-    }
-
     /// High-performance send using zero-copy loan pattern internally
     /// This method now uses the loan() backend for optimal performance (~200ns latency)
     /// The API remains simple while delivering the best possible performance

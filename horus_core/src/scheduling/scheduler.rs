@@ -1,6 +1,6 @@
 use crate::core::{Node, NodeHeartbeat, NodeInfo};
 use crate::error::HorusResult;
-use crate::memory::platform::{shm_heartbeats_dir, shm_session_dir};
+use crate::memory::platform::shm_heartbeats_dir;
 use colored::Colorize;
 use std::collections::HashMap;
 use std::fs;
@@ -2030,16 +2030,13 @@ impl Scheduler {
         }
     }
 
-    /// Clean up session directory (topics and metadata)
+    /// Clean up session directory (no-op with flat namespace)
+    ///
+    /// With the simplified flat namespace model, topics are shared globally
+    /// and should be cleaned up manually via `horus clean` command.
     fn cleanup_session() {
-        // Get current session ID from environment
-        if let Ok(session_id) = std::env::var("HORUS_SESSION_ID") {
-            let session_dir = shm_session_dir(&session_id);
-
-            if session_dir.exists() {
-                let _ = fs::remove_dir_all(&session_dir);
-            }
-        }
+        // No-op: flat namespace means no session-specific cleanup needed
+        // Use `horus clean --shm` to remove all shared memory
     }
 
     /// Snapshot node state to registry (for crash forensics and persistence)

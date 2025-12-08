@@ -33,28 +33,24 @@ Shared memory is a region of RAM that multiple processes can access simultaneous
 
 ### Storage Location
 
-HORUS stores shared memory segments in platform-specific session-scoped directories:
+HORUS stores shared memory segments in platform-specific directories using a **flat namespace** (like ROS):
 
 **Linux:**
 ```
-/dev/shm/horus/sessions/{session_id}/topics/
+/dev/shm/horus/topics/
 ```
 
 **macOS:**
 ```
-/tmp/horus/sessions/{session_id}/topics/
+/tmp/horus/topics/
 ```
 
 **Windows:**
 ```
-%TEMP%\horus\sessions\{session_id}\topics\
+%TEMP%\horus\topics\
 ```
 
-Or in global topics (accessible across all sessions):
-
-**Linux:** `/dev/shm/horus/global/`
-**macOS:** `/tmp/horus/global/`
-**Windows:** `%TEMP%\horus\global\`
+All processes on the same machine share the same topic namespace. This is simple and familiar to ROS developers.
 
 **Why platform-specific paths?**
 
@@ -66,160 +62,60 @@ Or in global topics (accessible across all sessions):
 
 **Cross-platform**: Auto-detected at compile time
 
-**Automatic cleanup**: Can be cleaned manually if needed
+**Simple cleanup**: Use `horus clean --shm` or delete the directory
 
-### Session Management
+### Flat Namespace Design (ROS-like)
 
-**Session-scoped topics** (default):
-- Each `horus run` creates a unique session ID
-- Topics isolated to that session
-- Multiple processes communicate by sharing the same session ID
-- Configure in `horus.yaml`:
-
-```yaml
-session_id: "my-shared-session"
-```
-
-**Global topics** (cross-session):
-- Use `Hub::new_global()` instead of `Hub::new()`
-- Topics accessible across ALL sessions
-- Useful for system-wide services
-
-## Session Design Philosophy
-
-### The Problem Sessions Solve
-
-Without sessions, all HORUS applications on the same machine would share a single topic namespace. This creates serious problems:
+HORUS uses a **flat topic namespace** like ROS. All processes on the same machine share the same topics:
 
 ```
-# Project A: Robot Arm Controller
-Hub::new("robot.cmd_vel")  → writes to /dev/shm/horus/topics/robot_cmd_vel
+# Terminal 1: Robot controller
+Hub::new("cmd_vel")  → /dev/shm/horus/topics/horus_cmd_vel
 
-# Project B: Mobile Robot (running simultaneously)
-Hub::new("robot.cmd_vel")  → SAME file! Collision!
+# Terminal 2: GUI monitor (same topic!)
+Hub::new("cmd_vel")  → /dev/shm/horus/topics/horus_cmd_vel
 ```
 
-**Result**: Project B's velocity commands would control Project A's robot arm. This is dangerous and confusing.
+**Result**: Both processes automatically communicate. No configuration needed!
 
-### The Solution: Namespace Isolation
+### Why Flat Namespace?
 
-Sessions provide **automatic namespace isolation**. Each project gets its own sandbox:
+| Benefit | Description |
+|---------|-------------|
+| **Simplicity** | No session IDs to configure |
+| **ROS familiarity** | Same mental model as ROS developers expect |
+| **Easy debugging** | `ls /dev/shm/horus/topics/` shows all topics |
+| **Multi-process by default** | Nodes in different terminals automatically share topics |
 
-```
-# Project A (session: "arm-controller-abc123")
-/dev/shm/horus/sessions/arm-controller-abc123/topics/robot_cmd_vel
+### Topic Isolation (When Needed)
 
-# Project B (session: "mobile-robot-xyz789")
-/dev/shm/horus/sessions/mobile-robot-xyz789/topics/robot_cmd_vel
-```
+If you need topic isolation between projects, use **topic prefixes** (like ROS namespaces):
 
-**Result**: Complete isolation. No interference. Safe by default.
-
-### Design Tradeoffs
-
-HORUS sessions are designed around three principles:
-
-| Principle | Implementation | Benefit |
-|-----------|---------------|---------|
-| **Safe by default** | Auto-generated unique session IDs | No accidental cross-talk between unrelated projects |
-| **Explicit sharing** | Configurable `session_id` in horus.yaml | Multi-process apps (backend + GUI) can communicate |
-| **Escape hatch** | `Hub::new_global()` | System-wide services transcend all sessions |
-
-### Why Not Just Use Topic Prefixes?
-
-Some frameworks rely on manual topic prefixes (e.g., `/project_a/robot/cmd_vel`). HORUS rejected this approach:
-
-| Approach | Problem |
-|----------|---------|
-| Manual prefixes | Error-prone, easy to forget, no enforcement |
-| ROS-style roscore | Single point of failure, extra process to manage |
-| HORUS sessions | Automatic, enforced isolation with opt-in sharing |
-
-### Why File-Based Session Directories?
-
-Sessions use filesystem directories (`/dev/shm/horus/sessions/{id}/`) rather than in-memory registries:
-
-**Debugging**: `ls /dev/shm/horus/sessions/` shows all active sessions
-
-**Cleanup**: Delete a directory to clean up a crashed session
-
-**Persistence**: Sessions survive process restarts (for multi-process apps)
-
-**No daemon**: No background process needed to track sessions
-
-### The Three-Tier Model
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     GLOBAL TOPICS                            │
-│  /dev/shm/horus/global/                                      │
-│  - System-wide services (monitoring, logging)                │
-│  - Accessible from ANY session                               │
-│  - Use: Hub::new_global("topic")                            │
-└─────────────────────────────────────────────────────────────┘
-                              ▲
-                              │ opt-in
-┌─────────────────────────────────────────────────────────────┐
-│                   SESSION TOPICS (Shared)                    │
-│  /dev/shm/horus/sessions/{explicit-id}/                     │
-│  - Multi-process apps sharing session_id                    │
-│  - Backend + GUI, distributed systems                       │
-│  - Configure: session_id: "my-app" in horus.yaml           │
-└─────────────────────────────────────────────────────────────┘
-                              ▲
-                              │ opt-in
-┌─────────────────────────────────────────────────────────────┐
-│                SESSION TOPICS (Isolated) - DEFAULT          │
-│  /dev/shm/horus/sessions/{auto-generated-uuid}/             │
-│  - Single-process or single horus run                       │
-│  - Complete isolation from other projects                   │
-│  - No configuration needed                                  │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### When to Use Each Tier
-
-**Default (Isolated Sessions)** - Most common:
-```bash
-horus run main.rs  # Auto-generates unique session
-```
-Use for: Development, testing, standalone applications
-
-**Shared Sessions** - Multi-process apps:
-```yaml
-# horus.yaml
-session_id: "robot-system-v1"
-```
-Use for: Backend + GUI, microservices, distributed robotics
-
-**Global Topics** - System services:
 ```rust
-Hub::new_global("system/diagnostics")?;
+// Project A
+Hub::new("robot_arm/cmd_vel")?;
+
+// Project B
+Hub::new("mobile_robot/cmd_vel")?;
 ```
-Use for: Monitoring monitors, logging aggregators, fleet management
+
+This creates separate topics:
+- `/dev/shm/horus/topics/horus_robot_arm_cmd_vel`
+- `/dev/shm/horus/topics/horus_mobile_robot_cmd_vel`
 
 ### File Naming Convention
 
 Shared memory topics follow this naming:
 
-**Session-scoped**:
 ```
-/dev/shm/horus/sessions/{session_id}/topics/horus_{topic_name}
-```
-
-**Global**:
-```
-/dev/shm/horus/global/horus_{topic_name}
+/dev/shm/horus/topics/horus_{topic_name}
 ```
 
 Examples:
 ```bash
-# Session-scoped
-/dev/shm/horus/sessions/snakesim-session/topics/horus_cmd_vel
-/dev/shm/horus/sessions/abc123-uuid/topics/horus_laser_scan
-
-# Global
-/dev/shm/horus/global/horus_system_monitor
+/dev/shm/horus/topics/horus_cmd_vel
+/dev/shm/horus/topics/horus_laser_scan
+/dev/shm/horus/topics/horus_system_monitor
 ```
 
 **Topic name sanitization**:
@@ -507,34 +403,23 @@ df -h /tmp
 # tmpfs           7.8G  128M  7.7G   2% /dev/shm
 ```
 
-### Session Isolation & Automatic Cleanup
+### Manual Cleanup
 
-**HORUS automatically manages shared memory using session isolation:**
-
-Each `horus run` command gets a unique session ID and stores data in:
-```bash
-# Linux:  /dev/shm/horus/sessions/{session_id}/topics/
-# macOS:  /tmp/horus/sessions/{session_id}/topics/
-# Windows: %TEMP%\horus\sessions\{session_id}\topics\
-```
-
-**Benefits:**
-- -Multiple runs don't interfere with each other
-- -Automatic cleanup when run completes
-- -Safe to run multiple tests simultaneously
-- -No manual cleanup needed
-
-**Manual cleanup (rarely needed):**
-
-Only necessary after crashes or for testing:
+HORUS uses a flat namespace, so shared memory persists across runs. Clean up when needed:
 
 ```bash
-# Clean all HORUS shared memory (all sessions)
-rm -rf /dev/shm/horus/
+# Using HORUS CLI (recommended)
+horus clean --shm
 
-# Clean specific session
-rm -rf /dev/shm/horus/sessions/{session_id}/
+# Or manually remove the directory
+rm -rf /dev/shm/horus/      # Linux
+rm -rf /tmp/horus/          # macOS
 ```
+
+**When to clean:**
+- After crashes
+- When testing different configurations
+- Before starting a new development session
 
 ### Monitoring Memory Usage
 
@@ -848,24 +733,23 @@ chmod 755 /tmp/horus/      # macOS
 
 ### Stale Shared Memory
 
-**Cause**: Node crashed before session cleanup
+**Cause**: Node crashed leaving shared memory files
 
-**Note**: HORUS uses session isolation and auto-cleanup. This is rarely an issue anymore.
-
-**Solution** (if needed):
+**Solution**:
 ```bash
+# Using HORUS CLI
+horus clean --shm
+
+# Or manually:
 # Linux
-ls -l /dev/shm/horus/sessions/
 rm -rf /dev/shm/horus/
 
 # macOS
-ls -l /tmp/horus/sessions/
 rm -rf /tmp/horus/
 ```
 
 ```powershell
 # Windows
-dir $env:TEMP\horus\sessions
 Remove-Item -Recurse -Force "$env:TEMP\horus"
 ```
 
@@ -882,100 +766,69 @@ let pub_hub: Hub<f32> = Hub::new("data");
 let sub_hub: Hub<f32> = Hub::new("data");  // Same type!
 ```
 
-## Cross-Session Communication
+## Multi-Process Communication
 
-HORUS provides two ways to enable communication across multiple processes:
+HORUS uses a **flat namespace** (like ROS), so multi-process communication works automatically:
 
-### Method 1: Shared Session ID (Recommended for Related Processes)
+### Automatic Topic Sharing
 
-Configure the same `session_id` in `horus.yaml` for processes that need to communicate:
+When processes use the same topic name, they automatically communicate:
 
-**Backend - horus.yaml**:
-```yaml
-name: my_backend
-version: "0.1.0"
-session_id: "my-app-session"  # Share this ID
-
-dependencies:
-  - horus
-```
-
-**GUI - horus.yaml**:
-```yaml
-name: my_gui
-version: "0.1.0"
-session_id: "my-app-session"  # Same session ID
-
-dependencies:
-  - horus
-```
-
-**Usage**:
 ```rust
 // Backend (Terminal 1) - inside Node::tick()
 fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
     let data = self.read_sensor();
-    self.publisher.send(data, &mut ctx).ok();
+    self.publisher.send(data, &mut ctx).ok();  // Hub::new("sensors")
 }
 
 // GUI (Terminal 2) - inside Node::tick()
 fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
-    if let Some(data) = self.subscriber.recv(&mut ctx) {
-        // Receives data from backend!
+    if let Some(data) = self.subscriber.recv(&mut ctx) {  // Hub::new("sensors")
+        // Receives data from backend automatically!
     }
 }
 ```
 
-Both processes will use `/dev/shm/horus/sessions/my-app-session/topics/sensors`.
+Both processes use `/dev/shm/horus/topics/horus_sensors` - no configuration needed!
 
-### Method 2: Global Topics (For System-Wide Services)
+### Running Multi-Process Applications
 
-Use `Hub::new_global()` for topics that should be accessible across all sessions:
+```bash
+# Terminal 1 - Backend
+horus run backend.rs
+
+# Terminal 2 - GUI (same topic names = automatic communication)
+horus run gui.rs
+```
+
+### Topic Isolation (When Needed)
+
+If you need to isolate topics between projects, use prefixes:
 
 ```rust
-// System monitor (available to all sessions) - inside Node::tick()
-fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
-    let stats = self.collect_stats();
-    self.monitor.send(stats, &mut ctx).ok();
-}
+// Project A
+Hub::new("project_a/sensors")?;
 
-// Any other process (different session) - inside Node::tick()
-fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
-    if let Some(stats) = self.stats_subscriber.recv(&mut ctx) {
-        // Receives data regardless of session!
-    }
-}
+// Project B
+Hub::new("project_b/sensors")?;
 ```
 
-Global topics use `/dev/shm/horus/global/system_monitor`.
-
-### When to Use Each Method
-
-**Use Session ID** when:
-- Building multi-process applications (backend + GUI)
-- Processes are logically related
-- You want isolation from other apps
-
-**Use Global Topics** when:
-- Building system-wide services (monitoring, logging)
-- Multiple unrelated applications need the same data
-- You want maximum discoverability
 
 ### Real-World Example: Snake Game
 
-The snakesim example demonstrates session-based communication:
+The snakesim example demonstrates multi-process communication:
 
 ```bash
 # Terminal 1 - Backend
 cd ~/my_snakesim
 horus run main.rs
 
-# Terminal 2 - GUI (shares session via horus.yaml)
+# Terminal 2 - GUI (same topics = automatic communication)
 cd ~/my_snakesim
 horus run snakesim_gui/main.rs
 ```
 
-Both share `session_id: "snakesim-session"` in their `horus.yaml` files, enabling cross-process communication.
+Both use the same topic names, so communication works automatically.
 
 ## Next Steps
 

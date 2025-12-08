@@ -31,12 +31,14 @@ pub mod config;
 pub mod hub;
 pub mod link;
 pub mod network;
+pub mod pod;
 pub mod traits;
 
 // Re-export commonly used types for convenience
 pub use config::{HorusConfig, HubConfig};
 pub use hub::Hub;
 pub use link::{ConnectionState, Link, LinkMetrics, LinkRole};
+pub use pod::{PodLink, PodMessage};
 pub use traits::{Channel, Publisher, Subscriber};
 
 use crate::communication::traits::{Publisher as PublisherTrait, Subscriber as SubscriberTrait};

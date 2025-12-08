@@ -448,13 +448,7 @@ Each file runs in a separate process with its own HORUS scheduler, communicating
 
 **Running nodes separately** (e.g., in different terminals):
 
-Projects created with `horus new` include a `session_id` in `horus.yaml`:
-
-```yaml
-session_id: "my-project-session"  # Auto-generated from project name
-```
-
-This allows running nodes in separate terminals that can communicate:
+HORUS uses a flat namespace for topics (like ROS), so nodes automatically communicate:
 
 ```bash
 # Terminal 1
@@ -464,9 +458,9 @@ horus run sensor.rs
 horus run controller.rs
 ```
 
-Both share the same session → communication works!
+Both share the same global topic namespace → communication works automatically!
 
-**Alternative**: Use `Hub::new_global()` for cross-session communication (no session_id needed).
+**Cleanup**: Use `horus clean --shm` to remove shared memory when done.
 
 **Note:** `horus run` works for single-file projects and projects with `horus.yaml` or a single `Cargo.toml`. It automatically handles dependencies and builds in a managed workspace.
 

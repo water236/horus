@@ -68,6 +68,11 @@ name = "test_critical_production"
 path = "src/bin/test_critical_production.rs"
 doc = false
 
+[[bin]]
+name = "pod_benchmark"
+path = "src/bin/pod_benchmark.rs"
+doc = true
+
 [dependencies]
 horus = { path = "../horus" }
 horus_core = { path = "../horus_core" }
@@ -80,6 +85,8 @@ colored = "2.0"
 anyhow = "1.0"
 libc = "0.2"
 rand = "0.8"  # For bootstrap confidence intervals
+plotters = "0.3"  # For benchmark visualization
+chrono = "0.4"    # For timestamps in reports
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

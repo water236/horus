@@ -217,52 +217,31 @@ scheduler.run()?;
 
 ## Running Nodes in Separate Processes
 
-The example above runs both nodes in a **single process**. For multi-process applications (e.g., separate backend + GUI), you need a shared `session_id`.
+The example above runs both nodes in a **single process**. HORUS uses a **flat namespace** (like ROS), so multi-process communication works automatically!
 
-### Option 1: Configure session_id in horus.yaml
+### Running in Separate Terminals
 
-Since `horus new` now auto-generates a `session_id`, you can run nodes separately:
-
-```yaml
-# horus.yaml (auto-generated)
-name: temperature-monitor
-session_id: "temperature-monitor-session"  # Shared session
-dependencies:
-  - horus@0.1.0
-```
-
-Now you can run nodes in different terminals:
+Just run each file in a different terminal - they automatically share topics:
 
 ```bash
 # Terminal 1: Run sensor
 horus run sensor.rs
 
-# Terminal 2: Run monitor
+# Terminal 2: Run monitor (automatically connects!)
 horus run monitor.rs
 ```
 
-Both share the same session → communication works!
+Both use the same topic name (`"temperature"`) → communication works automatically!
 
-### Option 2: Use Glob Pattern
+### Using Glob Pattern
 
-Run multiple files together (auto-shares session):
+Run multiple files together:
 
 ```bash
 horus run "*.rs"  # All Rust files run as separate processes
 ```
 
-### Option 3: Use Global Hubs
-
-For cross-session communication (e.g., system-wide services):
-
-```rust
-// Instead of Hub::new()
-let hub: Hub<f32> = Hub::new_global("temperature")?;
-```
-
-Global hubs work across ALL sessions automatically.
-
-> [TIP] **See [Configuration](/configuration#session-management)** for details on session_id and [Shared Memory](/core-concepts-shared-memory#session-management) for how sessions work.
+> [TIP] **See [Shared Memory](/concepts/core-concepts-shared-memory)** for details on the flat namespace architecture.
 
 ## Next Steps
 

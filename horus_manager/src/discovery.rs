@@ -1,8 +1,6 @@
 use horus_core::core::{HealthStatus, NetworkStatus, NodeHeartbeat, NodeState};
 use horus_core::error::HorusResult;
-use horus_core::memory::{
-    is_session_alive, shm_base_dir, shm_heartbeats_dir, shm_network_dir, shm_topics_dir,
-};
+use horus_core::memory::{shm_heartbeats_dir, shm_network_dir, shm_topics_dir};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -36,6 +34,37 @@ pub enum ProcessCategory {
     CLI,  // Command line tools
 }
 
+/// Topic lifecycle status for monitoring
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopicStatus {
+    /// Active: has live processes AND recent writes (within 30 seconds)
+    Active,
+    /// Idle: has live processes but no recent writes (30s - 5min)
+    Idle,
+    /// Stale: no live processes OR very old (5+ minutes without activity)
+    Stale,
+}
+
+impl TopicStatus {
+    /// Get a display symbol for the status
+    pub fn symbol(&self) -> &'static str {
+        match self {
+            TopicStatus::Active => "●",
+            TopicStatus::Idle => "◐",
+            TopicStatus::Stale => "○",
+        }
+    }
+
+    /// Get a description of the status
+    pub fn description(&self) -> &'static str {
+        match self {
+            TopicStatus::Active => "active",
+            TopicStatus::Idle => "idle",
+            TopicStatus::Stale => "stale",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SharedMemoryInfo {
     pub topic_name: String,
@@ -47,6 +76,10 @@ pub struct SharedMemoryInfo {
     pub publishers: Vec<String>,
     pub subscribers: Vec<String>,
     pub message_rate_hz: f32,
+    /// Topic lifecycle status (Active, Idle, or Stale)
+    pub status: TopicStatus,
+    /// Human-readable age string (e.g., "2s ago", "5m ago", "1h ago")
+    pub age_string: String,
 }
 
 // Fast discovery cache to avoid expensive filesystem operations
@@ -130,7 +163,7 @@ pub fn discover_nodes() -> HorusResult<Vec<NodeStatus>> {
 
 fn discover_nodes_uncached() -> HorusResult<Vec<NodeStatus>> {
     // PRIMARY SOURCE 1: registry.json - discover nodes from scheduler registry
-    // This is session-based: registry file is cleaned when scheduler PID dies
+    // Registry file is cleaned when scheduler process terminates
     let mut nodes = discover_nodes_from_registry().unwrap_or_default();
 
     // PRIMARY SOURCE 2: Heartbeat files - discover nodes from /dev/shm/horus/heartbeats
@@ -198,7 +231,7 @@ fn discover_nodes_from_heartbeats() -> HorusResult<Vec<NodeStatus>> {
                     // Read heartbeat to get status info
                     if let Some(heartbeat) = NodeHeartbeat::read_from_file(node_name) {
                         // Only include nodes with recent heartbeats (within 60 seconds)
-                        // This prevents showing stale nodes from previous sessions
+                        // This prevents showing stale nodes from terminated processes
                         if heartbeat.is_fresh(60) {
                             let status_str = match heartbeat.state {
                                 NodeState::Uninitialized => "Idle",
@@ -1505,43 +1538,34 @@ lazy_static::lazy_static! {
 fn discover_shared_memory_uncached() -> HorusResult<Vec<SharedMemoryInfo>> {
     let mut topics = Vec::new();
 
-    // Scan all LIVE sessions for session-isolated topics (session-based like rqt)
-    let sessions_dir = shm_base_dir().join("sessions");
-    if sessions_dir.exists() {
-        if let Ok(session_entries) = std::fs::read_dir(&sessions_dir) {
-            for session_entry in session_entries.flatten() {
-                let session_path = session_entry.path();
-                if let Some(session_id) = session_path.file_name().and_then(|s| s.to_str()) {
-                    // SESSION-BASED LIVENESS: Only include topics from live sessions
-                    if is_session_alive(session_id) {
-                        let session_topics_path = session_path.join("topics");
-                        if session_topics_path.exists() {
-                            topics.extend(scan_topics_directory(&session_topics_path)?);
-                        }
-                    } else {
-                        // Auto-cleanup dead session directories (instant cleanup like rqt)
-                        let _ = std::fs::remove_dir_all(&session_path);
-                    }
-                }
-            }
-        }
-    }
-
-    // Also scan global/legacy path for backward compatibility
-    let global_shm_path = shm_topics_dir();
-    if global_shm_path.exists() {
-        // Auto-cleanup stale topics in global directory (not session-managed)
-        // Topics are stale if: no process has them open AND not modified in 5+ minutes
-        cleanup_stale_global_topics(&global_shm_path);
-        topics.extend(scan_topics_directory(&global_shm_path)?);
+    // Scan topics directory (flat namespace - all topics in one place like ROS)
+    // Note: Discovery is read-only - no auto-cleanup here
+    // Use cleanup_stale_topics() explicitly when cleanup is desired
+    let topics_path = shm_topics_dir();
+    if topics_path.exists() {
+        topics.extend(scan_topics_directory(&topics_path)?);
     }
 
     Ok(topics)
 }
 
-/// Clean up stale topic files from the global topics directory
-/// A topic is stale if no process has it mmap'd AND it hasn't been modified in 5+ minutes
-fn cleanup_stale_global_topics(shm_path: &Path) {
+/// Clean up stale topic files from the global topics directory.
+///
+/// A topic is considered stale if:
+/// 1. No process has it mmap'd (no live readers/writers)
+/// 2. It hasn't been modified in 5+ minutes
+///
+/// This function is NOT called automatically during discovery.
+/// Call it explicitly from `horus run` startup or `horus clean --stale`.
+pub fn cleanup_stale_topics() {
+    let topics_path = shm_topics_dir();
+    if topics_path.exists() {
+        cleanup_stale_topics_in_dir(&topics_path);
+    }
+}
+
+/// Internal: Clean up stale topic files in a specific directory
+fn cleanup_stale_topics_in_dir(shm_path: &Path) {
     const STALE_THRESHOLD_SECS: u64 = 300; // 5 minutes
 
     if let Ok(entries) = std::fs::read_dir(shm_path) {
@@ -1704,8 +1728,7 @@ fn scan_topic_file(
     let has_valid_processes = accessing_procs.iter().any(|pid| process_exists(*pid));
 
     // Include all topics in HORUS directory
-    // Topics persist for the lifetime of the session - cleanup happens when
-    // the session ends (via Scheduler::cleanup_session), not based on time
+    // Topics persist until manually cleaned or processes terminate
     let active = has_valid_processes || is_recent;
 
     // Calculate message rate from modification times
@@ -1724,21 +1747,82 @@ fn scan_topic_file(
         publishers = active_nodes.to_vec();
     }
 
+    // Compute live processes (filter dead ones)
+    let live_processes: Vec<u32> = accessing_procs
+        .iter()
+        .filter(|pid| process_exists(**pid))
+        .copied()
+        .collect();
+
+    // Compute status and age string
+    let (status, age_string) = compute_topic_status(&live_processes, modified);
+
     Some(SharedMemoryInfo {
         topic_name,
         size_bytes: size,
         active,
-        accessing_processes: accessing_procs
-            .iter()
-            .filter(|pid| process_exists(**pid))
-            .copied()
-            .collect(),
+        accessing_processes: live_processes,
         last_modified: modified,
         message_type,
         publishers,
         subscribers,
         message_rate_hz: message_rate,
+        status,
+        age_string,
     })
+}
+
+/// Compute topic status and age string based on live processes and modification time
+fn compute_topic_status(
+    live_processes: &[u32],
+    modified: Option<std::time::SystemTime>,
+) -> (TopicStatus, String) {
+    const ACTIVE_THRESHOLD_SECS: u64 = 30; // Recent activity = within 30 seconds
+    const STALE_THRESHOLD_SECS: u64 = 300; // Stale = 5+ minutes
+
+    let has_live_processes = !live_processes.is_empty();
+
+    // Calculate age
+    let (age_secs, age_string) = if let Some(mod_time) = modified {
+        if let Ok(elapsed) = mod_time.elapsed() {
+            let secs = elapsed.as_secs();
+            let age_str = format_age(secs);
+            (Some(secs), age_str)
+        } else {
+            (None, "unknown".to_string())
+        }
+    } else {
+        (None, "unknown".to_string())
+    };
+
+    // Determine status
+    let status = match (has_live_processes, age_secs) {
+        // Has live processes AND recent writes = Active
+        (true, Some(secs)) if secs < ACTIVE_THRESHOLD_SECS => TopicStatus::Active,
+        // Has live processes but no recent writes = Idle
+        (true, _) => TopicStatus::Idle,
+        // No live processes AND old = Stale
+        (false, Some(secs)) if secs >= STALE_THRESHOLD_SECS => TopicStatus::Stale,
+        // No live processes but recent = Idle (process just exited)
+        (false, Some(_)) => TopicStatus::Idle,
+        // Unknown modification time = Stale
+        (false, None) => TopicStatus::Stale,
+    };
+
+    (status, age_string)
+}
+
+/// Format age in human-readable form
+fn format_age(secs: u64) -> String {
+    if secs < 60 {
+        format!("{}s ago", secs)
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
+    }
 }
 
 fn calculate_topic_rate(topic_name: &str, modified: Option<std::time::SystemTime>) -> f32 {
@@ -2149,6 +2233,8 @@ mod tests {
             publishers: vec!["localization".to_string()],
             subscribers: vec!["navigation".to_string(), "visualization".to_string()],
             message_rate_hz: 30.0,
+            status: TopicStatus::Active,
+            age_string: "0s ago".to_string(),
         };
 
         assert_eq!(shm.topic_name, "robot.pose");
@@ -2172,6 +2258,8 @@ mod tests {
             publishers: vec![],
             subscribers: vec![],
             message_rate_hz: 0.0,
+            status: TopicStatus::Stale,
+            age_string: "unknown".to_string(),
         };
 
         assert!(!shm.active);
@@ -2501,6 +2589,8 @@ mod tests {
             publishers: vec![],
             subscribers: vec![],
             message_rate_hz: 0.0,
+            status: TopicStatus::Stale,
+            age_string: "unknown".to_string(),
         }];
 
         cache.update_shared_memory(shm);
@@ -2572,6 +2662,8 @@ mod tests {
             publishers: vec!["pub1".to_string()],
             subscribers: vec!["sub1".to_string(), "sub2".to_string()],
             message_rate_hz: 60.0,
+            status: TopicStatus::Active,
+            age_string: "0s ago".to_string(),
         };
 
         let cloned = shm.clone();
@@ -2627,34 +2719,18 @@ mod tests {
             println!();
         }
 
-        // Check what's on disk (cross-platform)
+        // Check what's on disk (flat namespace)
         println!("=== DISK CHECK ===");
-        let sessions_dir = shm_base_dir().join("sessions");
-        if sessions_dir.exists() {
-            println!("Sessions directory exists");
-            if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
-                for entry in entries.flatten() {
-                    let session_path = entry.path();
-                    if let Some(session_id) = session_path.file_name().and_then(|s| s.to_str()) {
-                        println!("  Session: {}", session_id);
-
-                        // Check if alive
-                        let alive = is_session_alive(session_id);
-                        println!("    Alive: {}", alive);
-
-                        let topics_dir = session_path.join("topics");
-                        if topics_dir.exists() {
-                            if let Ok(topic_entries) = std::fs::read_dir(&topics_dir) {
-                                for t in topic_entries.flatten() {
-                                    println!("      Topic file: {:?}", t.file_name());
-                                }
-                            }
-                        }
-                    }
+        let topics_dir = shm_topics_dir();
+        if topics_dir.exists() {
+            println!("Topics directory exists: {:?}", topics_dir);
+            if let Ok(topic_entries) = std::fs::read_dir(&topics_dir) {
+                for t in topic_entries.flatten() {
+                    println!("  Topic file: {:?}", t.file_name());
                 }
             }
         } else {
-            println!("Sessions directory DOES NOT EXIST");
+            println!("Topics directory DOES NOT EXIST");
         }
     }
 }

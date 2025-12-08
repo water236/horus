@@ -5,7 +5,6 @@ author: neos-builder
 license: Apache-2.0
 language: rust
 horus_id: null  # Auto-generated on first dependency resolution
-session_id: "1pub-session"  # Shared session for multi-process communication
 
 dependencies:
   - horus

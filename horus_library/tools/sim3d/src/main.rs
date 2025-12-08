@@ -217,9 +217,11 @@ fn run_visual_mode(cli: Cli) {
 
     // === INTEGRATED PLUGINS ===
 
-    // Configure HORUS transport with CLI args (session ID and robot name)
+    // Configure HORUS transport with CLI args
+    // Note: session_id is deprecated and ignored - all topics use flat namespace
+    #[allow(deprecated)]
     let transport_config = HorusTransportConfig {
-        session_id: cli.session.clone(),
+        session_id: None, // Deprecated field - ignored
         robot_name: cli.robot_name.clone(),
         ..Default::default()
     };
@@ -360,8 +362,10 @@ fn run_headless_mode(cli: Cli) {
     info!("Starting headless mode for RL training");
 
     // Extract HORUS config from CLI before it's moved into the app
+    // Note: session_id is deprecated and ignored - all topics use flat namespace
+    #[allow(deprecated)]
     let transport_config = HorusTransportConfig {
-        session_id: cli.session.clone(),
+        session_id: None, // Deprecated field - ignored
         robot_name: cli.robot_name.clone(),
         ..Default::default()
     };

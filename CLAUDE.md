@@ -47,7 +47,7 @@ HORUS/
 - macOS: `/tmp/horus/`
 - Topics: `{base}/topics/`
 - Heartbeats: `{base}/heartbeats/`
-- Sessions: `{base}/sessions/{id}/`
+- Tensors: `{base}/tensors/`
 
 ## Common Tasks
 

@@ -235,21 +235,6 @@ let hub: Hub<Image> = Hub::new_with_capacity("camera.image", 16)?;
 
 ---
 
-#### `new_global`
-
-```rust
-pub fn new_global(topic_name: &str) -> HorusResult<Self>
-```
-
-Creates a Hub accessible across all HORUS sessions on the system.
-
-**Parameters:**
-- `topic_name` - Unique identifier for the topic
-
-**Returns:** `HorusResult<Hub<T>>`
-
----
-
 #### `from_config`
 
 ```rust

@@ -13,6 +13,8 @@
 #![allow(unused_variables)]
 #![allow(unused_mut)]
 
+pub mod visualization;
+
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 

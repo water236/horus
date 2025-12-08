@@ -26,7 +26,6 @@ version: "1.2.3"
 description: "Advanced mobile robot controller with navigation"
 author: "Robotics Team"
 license: "Apache-2.0"
-session_id: "robot-fleet-alpha"
 mode: release
 language: rust
 
@@ -134,61 +133,6 @@ license: "Apache-2.0"
 license: "MIT"
 license: "Proprietary"
 ```
-
-## Session Management
-
-### `session_id` (Optional)
-
-Shared session identifier for cross-process communication.
-
-**Type**: String
-**Required**: No
-**Default**: Auto-generated UUID (unique per `horus run`)
-**Use Case**: Multi-process applications that need to share topics
-
-**When to Use:**
-- Building multi-process apps (backend + GUI)
-- Multiple related processes communicating via Hub
-- Want isolation from other apps
-
-**When NOT to Use:**
-- Single-process applications
-- Need system-wide topics (use `Hub::new_global()` instead)
-
-**Examples:**
-
-**Multi-process app (backend + GUI):**
-```yaml
-# backend/horus.yaml
-name: robot_controller
-version: "0.1.0"
-session_id: "robot-control-session"
-
-# gui/horus.yaml
-name: robot_monitor
-version: "0.1.0"
-session_id: "robot-control-session"  # Same session ID!
-```
-
-Both processes can now communicate:
-```rust
-// backend.rs
-let publisher: Hub<SensorData> = Hub::new("sensors")?;
-publisher.send(data, Some(&mut ctx))?;
-
-// gui.rs
-let subscriber: Hub<SensorData> = Hub::new("sensors")?;
-if let Some(data) = subscriber.recv(Some(&mut ctx)) {
-    // Receives data from backend!
-}
-```
-
-**Shared memory location:**
-```
-/dev/shm/horus/sessions/robot-control-session/topics/sensors
-```
-
-**See Also**: [Cross-Session Communication](/core-concepts-shared-memory#cross-session-communication)
 
 ## Build Configuration
 
@@ -610,7 +554,6 @@ version: "1.0.0"
 description: "Robot control backend with sensor processing"
 author: "ACME Robotics"
 license: "Apache-2.0"
-session_id: "robot-system-v1"  # Shared with GUI
 mode: release
 language: rust
 
@@ -640,7 +583,6 @@ version: "1.0.0"
 description: "Real-time robot monitor and visualization"
 author: "ACME Robotics"
 license: "Apache-2.0"
-session_id: "robot-system-v1"  # Shared with backend
 mode: release
 language: rust
 
@@ -659,6 +601,8 @@ ignore:
   files:
     - "debug_*.rs"
 ```
+
+> **Note**: HORUS uses a flat namespace (like ROS), so backend and GUI automatically share topics when using the same topic names. No configuration needed!
 
 ### Python Project
 
@@ -715,9 +659,6 @@ dependencies:
 
 Add comments to explain non-obvious choices:
 ```yaml
-# Using session_id to enable backend-GUI communication
-session_id: "robot-fleet-alpha"
-
 dependencies:
   # Version 2.0 required for new path planning algorithm
   - name: motion-planner
@@ -839,4 +780,4 @@ dependencies:
 - **[Environment Management](/package-management/environment-management)** - Freeze and restore environments
 - **[Package Management](/package-management/package-management)** - Install and manage packages
 - **[CLI Reference](/development/cli-reference)** - All HORUS commands
-- **[Cross-Session Communication](/core-concepts-shared-memory#cross-session-communication)** - Multi-process apps
+- **[Shared Memory](/concepts/core-concepts-shared-memory)** - Understanding the IPC architecture

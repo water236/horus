@@ -2,9 +2,7 @@
 //!
 //! Features beyond cargo test:
 //! - Build-before-test: Ensures Cargo.toml is generated/updated
-//! - Auto session isolation: Sets unique HORUS_SESSION_ID per test run
 //! - Simulation mode: Enables simulation drivers for hardware-free testing
-//! - Shared memory cleanup: Cleans up /dev/shm/horus/sessions/test_* after tests
 //! - Default single-threaded: Prevents shared memory conflicts (--parallel to override)
 //! - Integration test mode: Runs tests marked #[ignore]
 
@@ -14,51 +12,8 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use uuid::Uuid;
 
 use crate::commands::run;
-
-/// Shared memory base directory (platform-specific)
-fn shm_base_dir() -> PathBuf {
-    if cfg!(target_os = "macos") {
-        PathBuf::from("/tmp/horus")
-    } else {
-        PathBuf::from("/dev/shm/horus")
-    }
-}
-
-/// Clean up test session shared memory
-fn cleanup_test_sessions(session_prefix: &str, verbose: bool) -> Result<()> {
-    let sessions_dir = shm_base_dir().join("sessions");
-
-    if !sessions_dir.exists() {
-        return Ok(());
-    }
-
-    let mut cleaned = 0;
-    if let Ok(entries) = fs::read_dir(&sessions_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-
-            if name_str.starts_with(session_prefix) {
-                if let Err(e) = fs::remove_dir_all(entry.path()) {
-                    if verbose {
-                        eprintln!("  {} Failed to clean {}: {}", "[!]".yellow(), name_str, e);
-                    }
-                } else {
-                    cleaned += 1;
-                }
-            }
-        }
-    }
-
-    if cleaned > 0 && verbose {
-        println!("  {} Cleaned up {} test session(s)", "[*]".cyan(), cleaned);
-    }
-
-    Ok(())
-}
 
 /// Check if Cargo.toml needs regeneration
 fn needs_rebuild(horus_dir: &PathBuf) -> bool {
@@ -112,26 +67,12 @@ pub fn run_tests(
     simulation: bool,
     integration: bool,
     no_build: bool,
-    no_cleanup: bool,
+    _no_cleanup: bool, // Legacy parameter, kept for API compatibility
     verbose: bool,
 ) -> Result<()> {
     let horus_dir = PathBuf::from(".horus");
 
-    // Generate unique session ID for test isolation
-    let session_id = format!(
-        "test_{}",
-        Uuid::new_v4()
-            .to_string()
-            .split('-')
-            .next()
-            .unwrap_or("0000")
-    );
-
-    println!(
-        "{} Running HORUS tests (session: {})",
-        "[*]".cyan(),
-        session_id.yellow()
-    );
+    println!("{} Running HORUS tests", "[*]".cyan());
 
     // Step 1: Build if needed (unless --no-build)
     if !no_build {
@@ -161,21 +102,11 @@ pub fn run_tests(
     }
 
     // Step 2: Set up test environment
-    env::set_var("HORUS_SESSION_ID", &session_id);
-
     if simulation {
         env::set_var("HORUS_SIMULATION_MODE", "1");
         println!(
             "  {} Simulation mode enabled (no hardware required)",
             "[*]".cyan()
-        );
-    }
-
-    if verbose {
-        println!(
-            "  {} Environment: HORUS_SESSION_ID={}",
-            "[*]".cyan(),
-            session_id
         );
     }
 
@@ -185,7 +116,6 @@ pub fn run_tests(
     cmd.current_dir(&horus_dir);
 
     // Pass through environment
-    cmd.env("HORUS_SESSION_ID", &session_id);
     if simulation {
         cmd.env("HORUS_SIMULATION_MODE", "1");
     }
@@ -262,12 +192,7 @@ pub fn run_tests(
     // Step 4: Run the tests
     let status = cmd.status().context("Failed to execute cargo test")?;
 
-    // Step 5: Cleanup shared memory (unless --no-cleanup)
-    if !no_cleanup {
-        cleanup_test_sessions("test_", verbose)?;
-    }
-
-    // Step 6: Report results
+    // Step 5: Report results
     if status.success() {
         println!("{}", "Tests passed!".green().bold());
     } else {
@@ -281,13 +206,6 @@ pub fn run_tests(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_shm_base_dir() {
-        let base = shm_base_dir();
-        // Should be a valid path
-        assert!(base.to_string_lossy().contains("horus"));
-    }
 
     #[test]
     fn test_needs_rebuild_no_cargo_toml() {

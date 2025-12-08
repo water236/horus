@@ -199,6 +199,8 @@ struct TopicInfo {
     rate: f32,
     publisher_nodes: Vec<String>,
     subscriber_nodes: Vec<String>,
+    /// Topic lifecycle status (Active or Idle - Stale topics are filtered out)
+    status: crate::discovery::TopicStatus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1007,21 +1009,20 @@ impl TuiDashboard {
     }
 
     fn draw_topics_simple(&self, f: &mut Frame, area: Rect) {
-        // Simplified view showing only topic names
+        // Simplified view showing only active topic names (ROS-like)
         let rows: Vec<Row> = self
             .topics
             .iter()
             .map(|topic| {
-                let has_activity = topic.publishers > 0 || topic.subscribers > 0;
-                let status_symbol = if has_activity { "●" } else { "○" };
-                let status_color = if has_activity {
-                    Color::Cyan
-                } else {
-                    Color::DarkGray
+                // Green for active, yellow for idle (stale topics are filtered out)
+                let status_color = match topic.status {
+                    crate::discovery::TopicStatus::Active => Color::Green,
+                    crate::discovery::TopicStatus::Idle => Color::Yellow,
+                    crate::discovery::TopicStatus::Stale => Color::DarkGray, // shouldn't appear
                 };
 
                 Row::new(vec![
-                    Cell::from(status_symbol).style(Style::default().fg(status_color)),
+                    Cell::from("●").style(Style::default().fg(status_color)),
                     Cell::from(topic.name.clone()),
                 ])
             })
@@ -3473,19 +3474,18 @@ fn get_active_topics() -> Result<Vec<TopicInfo>> {
     // Use unified backend from monitor module
     let discovered_topics = crate::discovery::discover_shared_memory().unwrap_or_default();
 
-    if discovered_topics.is_empty() {
-        // Show helpful message if no topics detected
-        Ok(vec![TopicInfo {
-            name: "No active topics".to_string(),
-            msg_type: "N/A".to_string(),
-            publishers: 0,
-            subscribers: 0,
-            rate: 0.0,
-            publisher_nodes: Vec::new(),
-            subscriber_nodes: Vec::new(),
-        }])
+    // Filter to only show active topics (ROS-like behavior)
+    // Stale topics (no live processes, old modification time) are hidden
+    let active_topics: Vec<_> = discovered_topics
+        .into_iter()
+        .filter(|t| t.status != crate::discovery::TopicStatus::Stale)
+        .collect();
+
+    if active_topics.is_empty() {
+        // Return empty - no placeholder needed (clean like ROS)
+        Ok(Vec::new())
     } else {
-        Ok(discovered_topics
+        Ok(active_topics
             .into_iter()
             .map(|t| {
                 // Shorten type names for readability
@@ -3503,6 +3503,7 @@ fn get_active_topics() -> Result<Vec<TopicInfo>> {
                     rate: t.message_rate_hz,
                     publisher_nodes: t.publishers,
                     subscriber_nodes: t.subscribers,
+                    status: t.status,
                 }
             })
             .collect())
@@ -3886,6 +3887,7 @@ mod tests {
                 "node4".to_string(),
                 "node5".to_string(),
             ],
+            status: crate::discovery::TopicStatus::Active,
         };
 
         assert_eq!(topic.name, "sensors.lidar");

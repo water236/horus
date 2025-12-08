@@ -318,11 +318,11 @@ Press **L** to toggle LIDAR visualization
 
 ### Can't connect to topics
 
-Ensure both processes use the same session or use global hubs:
+Ensure both processes use the same topic name:
 
 ```rust
-// Use global hub for cross-session communication
-let hub = Hub::new_global("robot.cmd_vel")?;
+// Same topic name = automatic communication
+let hub = Hub::new("robot.cmd_vel")?;
 ```
 
 ## Next Steps

@@ -57,7 +57,7 @@
 //! ```
 
 use crate::error::{HorusError, HorusResult};
-use crate::memory::platform::shm_global_dir;
+use crate::memory::platform::shm_base_dir;
 use memmap2::{MmapMut, MmapOptions};
 use std::fs::{File, OpenOptions};
 use std::path::PathBuf;
@@ -166,7 +166,7 @@ impl TensorPool {
     ///
     /// If the pool already exists, it will be opened. Otherwise, a new pool is created.
     pub fn new(pool_id: u32, config: TensorPoolConfig) -> HorusResult<Self> {
-        let shm_dir = shm_global_dir();
+        let shm_dir = shm_base_dir().join("tensors");
         std::fs::create_dir_all(&shm_dir)?;
 
         let shm_path = shm_dir.join(format!("tensor_pool_{}", pool_id));
@@ -218,7 +218,7 @@ impl TensorPool {
 
     /// Open an existing tensor pool (fails if pool doesn't exist)
     pub fn open(pool_id: u32) -> HorusResult<Self> {
-        let shm_dir = shm_global_dir();
+        let shm_dir = shm_base_dir().join("tensors");
         let shm_path = shm_dir.join(format!("tensor_pool_{}", pool_id));
 
         if !shm_path.exists() {

@@ -40,7 +40,7 @@ pub mod params;
 pub mod scheduling;
 
 // Re-export commonly used types for easy access
-pub use communication::{Hub, Link, LinkMetrics};
+pub use communication::{Hub, Link, LinkMetrics, PodLink, PodMessage};
 pub use core::{
     HealthStatus, Node, NodeConfig, NodeHeartbeat, NodeInfo, NodeInfoExt, NodeMetrics, NodeState,
     TopicMetadata,

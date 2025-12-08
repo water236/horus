@@ -1,7 +1,9 @@
 """
 Pytest configuration for HORUS Python tests.
 
-Ensures test isolation by using unique session IDs for each test.
+Note: HORUS now uses a flat namespace (ROS-like global topics), so tests
+should use unique topic names to avoid conflicts. Session IDs are no longer
+used for isolation.
 """
 import os
 import uuid
@@ -9,19 +11,20 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def unique_session_id():
+def unique_test_prefix():
     """
-    Automatically set a unique HORUS_SESSION_ID for each test.
+    Generate a unique prefix for test topics to prevent conflicts between tests.
 
-    This prevents hub exhaustion by ensuring each test uses its own
-    shared memory namespace, avoiding conflicts between sequential tests.
+    With the flat namespace, tests should use unique topic names like:
+    hub = Hub(f"{test_prefix}_my_topic")
+
+    This fixture provides a unique prefix for each test.
     """
-    # Generate a unique session ID for this test
-    session_id = f"test_{uuid.uuid4().hex[:8]}"
-    os.environ["HORUS_SESSION_ID"] = session_id
+    # Generate a unique prefix for this test's topics
+    test_prefix = f"test_{uuid.uuid4().hex[:8]}"
 
-    yield session_id
+    yield test_prefix
 
-    # Cleanup: Remove session ID after test
-    if "HORUS_SESSION_ID" in os.environ:
-        del os.environ["HORUS_SESSION_ID"]
+    # Cleanup is automatic when process terminates - shared memory
+    # files in /dev/shm/horus/topics/ persist until manually cleaned
+    # or the next `horus run` clears stale topics

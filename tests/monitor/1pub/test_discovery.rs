@@ -1,40 +1,22 @@
 use horus::memory::shm_base_dir;
 
 fn main() {
-    let sessions_dir = shm_base_dir().join("sessions");
-    println!("Checking {}...", sessions_dir.display());
-    if !sessions_dir.exists() {
-        println!("Sessions directory does not exist!");
+    // Use flat namespace - topics are directly under base dir
+    let topics_dir = shm_base_dir().join("topics");
+    println!("Checking {}...", topics_dir.display());
+    if !topics_dir.exists() {
+        println!("Topics directory does not exist!");
         return;
     }
 
-    match std::fs::read_dir(sessions_dir) {
+    match std::fs::read_dir(&topics_dir) {
         Ok(entries) => {
             for entry in entries {
                 if let Ok(entry) = entry {
-                    let session_path = entry.path();
-                    println!("Found session: {:?}", session_path);
-
-                    let topics_path = session_path.join("topics");
-                    if topics_path.exists() {
-                        println!("  Topics directory exists: {:?}", topics_path);
-
-                        match std::fs::read_dir(&topics_path) {
-                            Ok(topic_entries) => {
-                                for topic_entry in topic_entries {
-                                    if let Ok(topic_entry) = topic_entry {
-                                        println!("    Topic file: {:?}", topic_entry.file_name());
-                                    }
-                                }
-                            }
-                            Err(e) => println!("  Error reading topics: {}", e),
-                        }
-                    } else {
-                        println!("  No topics directory");
-                    }
+                    println!("Topic file: {:?}", entry.file_name());
                 }
             }
         }
-        Err(e) => println!("Error reading sessions directory: {}", e),
+        Err(e) => println!("Error reading topics directory: {}", e),
     }
 }

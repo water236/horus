@@ -9,9 +9,7 @@ use crate::error::HorusResult;
 use std::path::PathBuf;
 
 #[cfg(target_os = "linux")]
-use crate::memory::platform::{
-    shm_global_dir, shm_session_topics_dir, shm_topics_dir, write_session_pid,
-};
+use crate::memory::platform::shm_topics_dir;
 #[cfg(target_os = "linux")]
 use memmap2::{MmapMut, MmapOptions};
 #[cfg(target_os = "linux")]
@@ -59,23 +57,8 @@ pub struct ShmRegion {
 impl ShmRegion {
     /// Create or open a shared memory region
     pub fn new(name: &str, size: usize) -> HorusResult<Self> {
-        Self::new_internal(name, size, false)
-    }
-
-    /// Create or open a global shared memory region (accessible across all sessions)
-    pub fn new_global(name: &str, size: usize) -> HorusResult<Self> {
-        Self::new_internal(name, size, true)
-    }
-
-    fn new_internal(name: &str, size: usize, global: bool) -> HorusResult<Self> {
-        let horus_shm_dir = if global {
-            shm_global_dir()
-        } else if let Ok(session_id) = std::env::var("HORUS_SESSION_ID") {
-            let _ = write_session_pid(&session_id);
-            shm_session_topics_dir(&session_id)
-        } else {
-            shm_topics_dir()
-        };
+        // Use flat namespace - all topics in same directory (ROS-like simplicity)
+        let horus_shm_dir = shm_topics_dir();
         std::fs::create_dir_all(&horus_shm_dir)?;
 
         // Topic names use dot notation (e.g., "motors.cmd_vel") - no conversion needed
@@ -123,11 +106,8 @@ impl ShmRegion {
 
     /// Open existing shared memory region (no creation)
     pub fn open(name: &str) -> HorusResult<Self> {
-        let horus_shm_dir = if let Ok(session_id) = std::env::var("HORUS_SESSION_ID") {
-            shm_session_topics_dir(&session_id)
-        } else {
-            shm_topics_dir()
-        };
+        // Use flat namespace - all topics in same directory
+        let horus_shm_dir = shm_topics_dir();
         // Topic names use dot notation (e.g., "motors.cmd_vel") - no conversion needed
         let path = horus_shm_dir.join(format!("horus_{}", name));
 
@@ -185,28 +165,10 @@ impl Drop for ShmRegion {
 impl ShmRegion {
     /// Create or open a shared memory region using shm_open (RAM-backed)
     pub fn new(name: &str, size: usize) -> HorusResult<Self> {
-        Self::new_internal(name, size, false)
-    }
-
-    /// Create or open a global shared memory region
-    pub fn new_global(name: &str, size: usize) -> HorusResult<Self> {
-        Self::new_internal(name, size, true)
-    }
-
-    fn new_internal(name: &str, size: usize, global: bool) -> HorusResult<Self> {
         use std::ffi::CString;
 
-        // Create shm name: /horus_<session>_<name> or /horus_global_<name>
-        let session_prefix = if global {
-            "global".to_string()
-        } else if let Ok(session_id) = std::env::var("HORUS_SESSION_ID") {
-            session_id
-        } else {
-            "default".to_string()
-        };
-
-        // Topic names use dot notation (e.g., "motors.cmd_vel") - no conversion needed
-        let shm_name = format!("/horus_{}_{}", session_prefix, name);
+        // Use flat namespace - all topics share same prefix (ROS-like simplicity)
+        let shm_name = format!("/horus_{}", name);
         let c_name =
             CString::new(shm_name.clone()).map_err(|e| format!("Invalid shm name: {}", e))?;
 
@@ -293,14 +255,8 @@ impl ShmRegion {
     pub fn open(name: &str) -> HorusResult<Self> {
         use std::ffi::CString;
 
-        let session_prefix = if let Ok(session_id) = std::env::var("HORUS_SESSION_ID") {
-            session_id
-        } else {
-            "default".to_string()
-        };
-
-        // Topic names use dot notation (e.g., "motors.cmd_vel") - no conversion needed
-        let shm_name = format!("/horus_{}_{}", session_prefix, name);
+        // Use flat namespace - all topics share same prefix
+        let shm_name = format!("/horus_{}", name);
         let c_name =
             CString::new(shm_name.clone()).map_err(|e| format!("Invalid shm name: {}", e))?;
 
@@ -388,15 +344,6 @@ impl Drop for ShmRegion {
 impl ShmRegion {
     /// Create or open a shared memory region using Windows API (pagefile-backed)
     pub fn new(name: &str, size: usize) -> HorusResult<Self> {
-        Self::new_internal(name, size, false)
-    }
-
-    /// Create or open a global shared memory region
-    pub fn new_global(name: &str, size: usize) -> HorusResult<Self> {
-        Self::new_internal(name, size, true)
-    }
-
-    fn new_internal(name: &str, size: usize, global: bool) -> HorusResult<Self> {
         use windows_sys::Win32::Foundation::{
             CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, INVALID_HANDLE_VALUE,
         };
@@ -404,17 +351,8 @@ impl ShmRegion {
             CreateFileMappingW, MapViewOfFile, FILE_MAP_ALL_ACCESS, PAGE_READWRITE,
         };
 
-        // Create mapping name: Global\horus_<session>_<name> or Local\horus_<name>
-        let session_prefix = if global {
-            "Global\\horus_global".to_string()
-        } else if let Ok(session_id) = std::env::var("HORUS_SESSION_ID") {
-            format!("Local\\horus_{}", session_id)
-        } else {
-            "Local\\horus_default".to_string()
-        };
-
-        // Topic names use dot notation (e.g., "motors.cmd_vel") - no conversion needed
-        let mapping_name = format!("{}_{}", session_prefix, name);
+        // Use flat namespace - all topics share same prefix (ROS-like simplicity)
+        let mapping_name = format!("Local\\horus_{}", name);
 
         // Convert to wide string
         let wide_name: Vec<u16> = mapping_name
@@ -476,14 +414,8 @@ impl ShmRegion {
             MapViewOfFile, OpenFileMappingW, FILE_MAP_ALL_ACCESS,
         };
 
-        let session_prefix = if let Ok(session_id) = std::env::var("HORUS_SESSION_ID") {
-            format!("Local\\horus_{}", session_id)
-        } else {
-            "Local\\horus_default".to_string()
-        };
-
-        // Topic names use dot notation (e.g., "motors.cmd_vel") - no conversion needed
-        let mapping_name = format!("{}_{}", session_prefix, name);
+        // Use flat namespace - all topics share same prefix
+        let mapping_name = format!("Local\\horus_{}", name);
         let wide_name: Vec<u16> = mapping_name
             .encode_utf16()
             .chain(std::iter::once(0))
@@ -573,9 +505,7 @@ unsafe impl Sync for ShmRegion {}
 // ============================================================================
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-use crate::memory::platform::{
-    shm_global_dir, shm_session_topics_dir, shm_topics_dir, write_session_pid,
-};
+use crate::memory::platform::shm_topics_dir;
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 use memmap2::{MmapMut, MmapOptions};
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -618,10 +548,6 @@ impl ShmRegion {
             name: name.to_string(),
             owner: is_owner,
         })
-    }
-
-    pub fn new_global(name: &str, size: usize) -> HorusResult<Self> {
-        Self::new(name, size)
     }
 
     pub fn open(name: &str) -> HorusResult<Self> {

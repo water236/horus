@@ -80,6 +80,52 @@ pub struct EnvironmentManifest {
     pub horus_version: String,
 }
 
+/// Driver metadata from the registry API
+/// Contains required features and dependencies for automatic installation
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DriverMetadata {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bus_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub driver_category: Option<String>,
+    /// Required Cargo features for this driver (e.g., ["serial-hardware", "i2c-hardware"])
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_features: Option<Vec<String>>,
+    /// Cargo crate dependencies (e.g., ["serialport@4.2", "i2cdev@0.6"])
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cargo_dependencies: Option<Vec<String>>,
+    /// Python package dependencies (e.g., ["pyserial>=3.5", "smbus2"])
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub python_dependencies: Option<Vec<String>>,
+    /// System packages required (e.g., ["libudev-dev", "libusb-1.0-0-dev"])
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_dependencies: Option<Vec<String>>,
+}
+
+/// Response from the driver metadata API endpoint
+#[derive(Debug, Deserialize)]
+struct DriverMetadataResponse {
+    #[serde(flatten)]
+    pub driver_metadata: Option<DriverMetadata>,
+}
+
+/// Response from the driver list API endpoint
+#[derive(Debug, Deserialize)]
+struct DriverListResponse {
+    pub drivers: Vec<DriverListEntry>,
+}
+
+/// Entry in the driver list response
+#[derive(Debug, Clone, Deserialize)]
+pub struct DriverListEntry {
+    pub name: String,
+    pub description: Option<String>,
+    pub bus_type: Option<String>,
+    pub category: Option<String>,
+    #[serde(flatten)]
+    pub driver_metadata: Option<DriverMetadata>,
+}
+
 /// URL-encode a package name for API calls
 /// Kept for safety but package names should be simple alphanumeric now
 pub fn url_encode_package_name(name: &str) -> String {
@@ -121,6 +167,165 @@ impl RegistryClient {
     /// Get the base URL of the registry
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    /// Fetch driver metadata for a package from the registry
+    /// Returns error if the package is not a driver or not found in the registry
+    pub fn fetch_driver_metadata(&self, package_name: &str) -> Result<DriverMetadata> {
+        let encoded_name = url_encode_package_name(package_name);
+        let url = format!("{}/api/drivers/{}", self.base_url, encoded_name);
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .map_err(|e| anyhow!("Failed to fetch driver metadata: {}", e))?;
+
+        if !response.status().is_success() {
+            return Err(anyhow!("Driver '{}' not found in registry", package_name));
+        }
+
+        // Try to parse the driver metadata response
+        let resp: DriverMetadataResponse = response
+            .json()
+            .map_err(|e| anyhow!("Failed to parse driver metadata: {}", e))?;
+
+        resp.driver_metadata
+            .ok_or_else(|| anyhow!("No driver metadata for '{}'", package_name))
+    }
+
+    /// Fetch driver metadata, returning Option (for backwards compatibility)
+    pub fn fetch_driver_metadata_opt(&self, package_name: &str) -> Option<DriverMetadata> {
+        self.fetch_driver_metadata(package_name).ok()
+    }
+
+    /// Fetch package type from registry (node, driver, plugin, tool, etc.)
+    pub fn fetch_package_type(&self, package_name: &str) -> Result<String> {
+        let encoded_name = url_encode_package_name(package_name);
+        let url = format!("{}/api/packages/{}", self.base_url, encoded_name);
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .map_err(|e| anyhow!("Failed to fetch package info: {}", e))?;
+
+        if !response.status().is_success() {
+            return Err(anyhow!("Package '{}' not found in registry", package_name));
+        }
+
+        // Parse the response to get package_type
+        let resp: serde_json::Value = response
+            .json()
+            .map_err(|e| anyhow!("Failed to parse package info: {}", e))?;
+
+        // Extract package_type from response, default to "node"
+        let pkg_type = resp
+            .get("package_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("node")
+            .to_string();
+
+        Ok(pkg_type)
+    }
+
+    /// Fetch driver metadata by querying the drivers list API
+    pub fn query_driver_features(&self, driver_name: &str) -> Option<Vec<String>> {
+        // Try direct driver metadata endpoint first
+        if let Some(meta) = self.fetch_driver_metadata_opt(driver_name) {
+            return meta.required_features;
+        }
+
+        // Try searching drivers by name
+        let url = format!("{}/api/drivers?search={}", self.base_url, driver_name);
+        if let Ok(response) = self.client.get(&url).send() {
+            if response.status().is_success() {
+                if let Ok(list) = response.json::<DriverListResponse>() {
+                    // Find exact or best match
+                    for driver in list.drivers {
+                        if driver.name.eq_ignore_ascii_case(driver_name) {
+                            return driver.driver_metadata.and_then(|m| m.required_features);
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// List all drivers from the registry, optionally filtered by category
+    pub fn list_drivers(&self, category: Option<&str>) -> Result<Vec<DriverListEntry>> {
+        let url = if let Some(cat) = category {
+            format!("{}/api/drivers?category={}", self.base_url, cat)
+        } else {
+            format!("{}/api/drivers", self.base_url)
+        };
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .map_err(|e| anyhow!("Failed to fetch drivers: {}", e))?;
+
+        if !response.status().is_success() {
+            return Err(anyhow!("Registry returned error: {}", response.status()));
+        }
+
+        // Try to parse as DriverListResponse or as array directly
+        let text = response
+            .text()
+            .map_err(|e| anyhow!("Failed to read response: {}", e))?;
+
+        // Try parsing as { "drivers": [...] } first
+        if let Ok(list) = serde_json::from_str::<DriverListResponse>(&text) {
+            return Ok(list.drivers);
+        }
+
+        // Try parsing as direct array
+        if let Ok(drivers) = serde_json::from_str::<Vec<DriverListEntry>>(&text) {
+            return Ok(drivers);
+        }
+
+        Ok(vec![])
+    }
+
+    /// Search for drivers by query string and optional bus type
+    pub fn search_drivers(
+        &self,
+        query: &str,
+        bus_type: Option<&str>,
+    ) -> Result<Vec<DriverListEntry>> {
+        let mut url = format!("{}/api/drivers?search={}", self.base_url, query);
+        if let Some(bus) = bus_type {
+            url.push_str(&format!("&bus_type={}", bus));
+        }
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .map_err(|e| anyhow!("Failed to search drivers: {}", e))?;
+
+        if !response.status().is_success() {
+            return Err(anyhow!("Registry returned error: {}", response.status()));
+        }
+
+        let text = response
+            .text()
+            .map_err(|e| anyhow!("Failed to read response: {}", e))?;
+
+        // Try parsing as { "drivers": [...] } first
+        if let Ok(list) = serde_json::from_str::<DriverListResponse>(&text) {
+            return Ok(list.drivers);
+        }
+
+        // Try parsing as direct array
+        if let Ok(drivers) = serde_json::from_str::<Vec<DriverListEntry>>(&text) {
+            return Ok(drivers);
+        }
+
+        Ok(vec![])
     }
 
     // Install a package to a specific target (used by install_to_target)
@@ -493,7 +698,106 @@ impl RegistryClient {
             }
         }
 
+        // Fetch and apply driver metadata if this is a driver package
+        if let Some(driver_meta) = self.fetch_driver_metadata_opt(package_name) {
+            self.apply_driver_requirements(&driver_meta, &target)?;
+        }
+
         Ok(actual_version)
+    }
+
+    /// Apply driver requirements (features, dependencies, system packages)
+    fn apply_driver_requirements(
+        &self,
+        driver_meta: &DriverMetadata,
+        target: &crate::workspace::InstallTarget,
+    ) -> Result<()> {
+        use crate::workspace::InstallTarget;
+
+        // Get workspace path for local installations
+        let workspace_path = match target {
+            InstallTarget::Local(path) => Some(path.clone()),
+            InstallTarget::Global => None,
+        };
+
+        // Apply required Cargo features
+        if let Some(features) = &driver_meta.required_features {
+            if !features.is_empty() {
+                println!("  {} Driver requires features:", "[BUILD]".cyan());
+                for feature in features {
+                    println!("    • {}", feature.yellow());
+                }
+
+                // Update Cargo.toml if we have a workspace path
+                if let Some(ws_path) = &workspace_path {
+                    if let Err(e) = add_features_to_cargo_toml(ws_path, features) {
+                        println!(
+                            "  {} Could not auto-add features to Cargo.toml: {}",
+                            "[WARN]".yellow(),
+                            e
+                        );
+                        println!(
+                            "    Add manually: horus_library = {{ features = {:?} }}",
+                            features
+                        );
+                    } else {
+                        println!("  {} Added features to Cargo.toml", "[OK]".green());
+                    }
+                }
+            }
+        }
+
+        // Add Cargo dependencies (crates.io)
+        if let Some(cargo_deps) = &driver_meta.cargo_dependencies {
+            if !cargo_deps.is_empty() {
+                println!("  {} Cargo dependencies required:", "[PKG]".cyan());
+                for dep in cargo_deps {
+                    println!("    • {}", dep.yellow());
+                }
+
+                // Update Cargo.toml if we have a workspace path
+                if let Some(ws_path) = &workspace_path {
+                    if let Err(e) = add_cargo_deps_to_cargo_toml(ws_path, cargo_deps) {
+                        println!(
+                            "  {} Could not auto-add dependencies to Cargo.toml: {}",
+                            "[WARN]".yellow(),
+                            e
+                        );
+                        println!("    Add manually to [dependencies]");
+                    } else {
+                        println!("  {} Added dependencies to Cargo.toml", "[OK]".green());
+                    }
+                }
+            }
+        }
+
+        // Install Python dependencies (PyPI)
+        if let Some(py_deps) = &driver_meta.python_dependencies {
+            if !py_deps.is_empty() {
+                println!("  {} Python dependencies required:", "[PY]".cyan());
+                for dep in py_deps {
+                    println!("    • {}", dep);
+                }
+                // Auto-install with pip
+                for dep in py_deps {
+                    let status = std::process::Command::new("pip3")
+                        .args(["install", "--quiet", dep])
+                        .status();
+                    if status.is_ok() {
+                        println!("  {} Installed {} via pip", "[OK]".green(), dep);
+                    }
+                }
+            }
+        }
+
+        // Handle system dependencies with smart detection
+        if let Some(sys_deps) = &driver_meta.system_dependencies {
+            if !sys_deps.is_empty() {
+                handle_system_dependencies(sys_deps)?;
+            }
+        }
+
+        Ok(())
     }
 
     fn install_from_pypi(
@@ -1606,6 +1910,365 @@ fn check_global_versions(cache_dir: &Path, package_name: &str) -> Result<bool> {
     }
 
     Ok(false)
+}
+
+/// Add required features to the project's Cargo.toml for horus_library
+fn add_features_to_cargo_toml(workspace_path: &Path, features: &[String]) -> Result<()> {
+    use toml_edit::{DocumentMut, Item, Value};
+
+    let cargo_toml_path = workspace_path.join("Cargo.toml");
+    if !cargo_toml_path.exists() {
+        return Err(anyhow!("Cargo.toml not found in workspace"));
+    }
+
+    let content = fs::read_to_string(&cargo_toml_path)?;
+    let mut doc = content
+        .parse::<DocumentMut>()
+        .map_err(|e| anyhow!("Failed to parse Cargo.toml: {}", e))?;
+
+    // Look for horus_library in dependencies
+    let deps = doc
+        .get_mut("dependencies")
+        .ok_or_else(|| anyhow!("No [dependencies] section"))?;
+
+    if let Some(horus_lib) = deps.get_mut("horus_library") {
+        // Get existing features or create empty array
+        match horus_lib {
+            Item::Value(Value::String(_)) => {
+                // Convert simple version string to table with features
+                let version = horus_lib.as_str().unwrap_or("*").to_string();
+                let mut table = toml_edit::InlineTable::new();
+                table.insert("version", version.into());
+                let mut features_array = toml_edit::Array::new();
+                for f in features {
+                    features_array.push(f.as_str());
+                }
+                table.insert("features", Value::Array(features_array));
+                *horus_lib = Item::Value(Value::InlineTable(table));
+            }
+            Item::Value(Value::InlineTable(table)) => {
+                // Add features to existing inline table
+                let existing_features = table
+                    .get("features")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+
+                let mut new_features = toml_edit::Array::new();
+                for f in &existing_features {
+                    new_features.push(f.as_str());
+                }
+                for f in features {
+                    if !existing_features.contains(f) {
+                        new_features.push(f.as_str());
+                    }
+                }
+                table.insert("features", Value::Array(new_features));
+            }
+            Item::Table(table) => {
+                // Add features to existing table
+                let existing_features = table
+                    .get("features")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+
+                let mut new_features = toml_edit::Array::new();
+                for f in &existing_features {
+                    new_features.push(f.as_str());
+                }
+                for f in features {
+                    if !existing_features.contains(f) {
+                        new_features.push(f.as_str());
+                    }
+                }
+                table.insert("features", toml_edit::value(Value::Array(new_features)));
+            }
+            _ => {
+                return Err(anyhow!("Unexpected horus_library format in Cargo.toml"));
+            }
+        }
+    } else if let Some(horus) = deps.get_mut("horus") {
+        // Also check for "horus" dependency (the unified crate)
+        // Similar logic as above
+        match horus {
+            Item::Value(Value::String(_)) => {
+                let version = horus.as_str().unwrap_or("*").to_string();
+                let mut table = toml_edit::InlineTable::new();
+                table.insert("version", version.into());
+                let mut features_array = toml_edit::Array::new();
+                for f in features {
+                    features_array.push(f.as_str());
+                }
+                table.insert("features", Value::Array(features_array));
+                *horus = Item::Value(Value::InlineTable(table));
+            }
+            Item::Value(Value::InlineTable(table)) => {
+                let existing_features = table
+                    .get("features")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+
+                let mut new_features = toml_edit::Array::new();
+                for f in &existing_features {
+                    new_features.push(f.as_str());
+                }
+                for f in features {
+                    if !existing_features.contains(f) {
+                        new_features.push(f.as_str());
+                    }
+                }
+                table.insert("features", Value::Array(new_features));
+            }
+            Item::Table(table) => {
+                let existing_features = table
+                    .get("features")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+
+                let mut new_features = toml_edit::Array::new();
+                for f in &existing_features {
+                    new_features.push(f.as_str());
+                }
+                for f in features {
+                    if !existing_features.contains(f) {
+                        new_features.push(f.as_str());
+                    }
+                }
+                table.insert("features", toml_edit::value(Value::Array(new_features)));
+            }
+            _ => {}
+        }
+    } else {
+        // No horus or horus_library dependency found - skip
+        return Ok(());
+    }
+
+    // Write back to file
+    fs::write(&cargo_toml_path, doc.to_string())?;
+    Ok(())
+}
+
+/// Detect the system package manager
+fn detect_package_manager() -> Option<(&'static str, &'static str, bool)> {
+    // Returns (command, install_subcommand, needs_sudo)
+    use std::process::Command;
+
+    // Check for apt (Debian/Ubuntu)
+    if Command::new("apt").arg("--version").output().is_ok() {
+        return Some(("apt", "install -y", true));
+    }
+    // Check for dnf (Fedora)
+    if Command::new("dnf").arg("--version").output().is_ok() {
+        return Some(("dnf", "install -y", true));
+    }
+    // Check for pacman (Arch)
+    if Command::new("pacman").arg("--version").output().is_ok() {
+        return Some(("pacman", "-S --noconfirm", true));
+    }
+    // Check for brew (macOS)
+    if Command::new("brew").arg("--version").output().is_ok() {
+        return Some(("brew", "install", false));
+    }
+    // Check for apk (Alpine)
+    if Command::new("apk").arg("--version").output().is_ok() {
+        return Some(("apk", "add", true));
+    }
+    None
+}
+
+/// Check if a system package is installed
+fn is_system_package_installed(pkg: &str, pkg_manager: &str) -> bool {
+    use std::process::Command;
+
+    let result = match pkg_manager {
+        "apt" => Command::new("dpkg").args(["-s", pkg]).output(),
+        "dnf" => Command::new("rpm").args(["-q", pkg]).output(),
+        "pacman" => Command::new("pacman").args(["-Q", pkg]).output(),
+        "brew" => Command::new("brew").args(["list", pkg]).output(),
+        "apk" => Command::new("apk").args(["info", "-e", pkg]).output(),
+        _ => return false,
+    };
+
+    result.map(|o| o.status.success()).unwrap_or(false)
+}
+
+/// Handle system dependencies with smart detection and optional installation
+fn handle_system_dependencies(deps: &[String]) -> Result<()> {
+    use colored::*;
+    use std::io::{self, Write};
+    use std::process::Command;
+
+    let Some((pkg_manager, install_cmd, needs_sudo)) = detect_package_manager() else {
+        // No known package manager, just notify
+        println!("  {} System packages required:", "[PKG]".cyan());
+        for dep in deps {
+            println!("    • {}", dep);
+        }
+        println!("    Please install these packages manually");
+        return Ok(());
+    };
+
+    // Check which packages are missing
+    let missing: Vec<&String> = deps
+        .iter()
+        .filter(|pkg| !is_system_package_installed(pkg, pkg_manager))
+        .collect();
+
+    if missing.is_empty() {
+        println!("  {} All system packages already installed", "[OK]".green());
+        return Ok(());
+    }
+
+    println!(
+        "  {} System packages required ({}):",
+        "[PKG]".cyan(),
+        pkg_manager
+    );
+    for dep in deps {
+        let status = if is_system_package_installed(dep, pkg_manager) {
+            format!("{}", "[OK]".green())
+        } else {
+            format!("{}", "missing".yellow())
+        };
+        println!("    • {} [{}]", dep, status);
+    }
+
+    // Build install command
+    let install_args: Vec<&str> = install_cmd.split_whitespace().collect();
+    let full_cmd = if needs_sudo {
+        format!(
+            "sudo {} {} {}",
+            pkg_manager,
+            install_cmd,
+            missing
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
+    } else {
+        format!(
+            "{} {} {}",
+            pkg_manager,
+            install_cmd,
+            missing
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
+    };
+
+    // Prompt user
+    print!("  {} Install missing packages? [Y/n]: ", "?".cyan());
+    io::stdout().flush().ok();
+
+    let mut input = String::new();
+    if io::stdin().read_line(&mut input).is_ok() {
+        let input = input.trim().to_lowercase();
+        if input.is_empty() || input == "y" || input == "yes" {
+            println!("  {} Running: {}", "->".cyan(), full_cmd);
+
+            let status = if needs_sudo {
+                Command::new("sudo")
+                    .arg(pkg_manager)
+                    .args(&install_args)
+                    .args(missing.iter().map(|s| s.as_str()))
+                    .status()
+            } else {
+                Command::new(pkg_manager)
+                    .args(&install_args)
+                    .args(missing.iter().map(|s| s.as_str()))
+                    .status()
+            };
+
+            match status {
+                Ok(s) if s.success() => {
+                    println!("  {} System packages installed", "[OK]".green());
+                }
+                Ok(_) => {
+                    println!(
+                        "  {} Installation failed. Run manually: {}",
+                        "[WARN]".yellow(),
+                        full_cmd
+                    );
+                }
+                Err(e) => {
+                    println!("  {} Could not run installer: {}", "[WARN]".yellow(), e);
+                    println!("    Run manually: {}", full_cmd);
+                }
+            }
+        } else {
+            println!("  {} Skipped. Run manually: {}", "->".cyan(), full_cmd);
+        }
+    }
+
+    Ok(())
+}
+
+/// Add cargo dependencies to Cargo.toml
+/// Dependencies are in format "crate_name@version" e.g., "serialport@4.2"
+fn add_cargo_deps_to_cargo_toml(workspace_path: &Path, deps: &[String]) -> Result<()> {
+    use toml_edit::DocumentMut;
+
+    let cargo_toml_path = workspace_path.join("Cargo.toml");
+    if !cargo_toml_path.exists() {
+        return Err(anyhow!("Cargo.toml not found in workspace"));
+    }
+
+    let content = fs::read_to_string(&cargo_toml_path)?;
+    let mut doc = content
+        .parse::<DocumentMut>()
+        .map_err(|e| anyhow!("Failed to parse Cargo.toml: {}", e))?;
+
+    // Ensure dependencies section exists
+    if doc.get("dependencies").is_none() {
+        doc["dependencies"] = toml_edit::table();
+    }
+    let deps_section = doc
+        .get_mut("dependencies")
+        .ok_or_else(|| anyhow!("No [dependencies] section"))?;
+
+    for dep_spec in deps {
+        // Parse "crate_name@version" or just "crate_name"
+        let (name, version) = if let Some((n, v)) = dep_spec.split_once('@') {
+            (n.trim(), Some(v.trim()))
+        } else {
+            (dep_spec.trim(), None)
+        };
+
+        // Skip if already present
+        if deps_section.get(name).is_some() {
+            continue;
+        }
+
+        // Add the dependency
+        let version_str = version.unwrap_or("*");
+        deps_section[name] = toml_edit::value(version_str);
+    }
+
+    // Write back to file
+    fs::write(&cargo_toml_path, doc.to_string())?;
+    Ok(())
 }
 
 // Copy directory recursively
@@ -2824,4 +3487,35 @@ impl RegistryClient {
 
         Ok(system_version.to_string())
     }
+}
+
+// ============================================================================
+// Public wrapper functions for use from main.rs
+// ============================================================================
+
+/// Public wrapper to add features to Cargo.toml (for horus drivers add)
+pub fn add_features_to_cargo_toml_pub(workspace_path: &Path, features: &[String]) -> Result<()> {
+    add_features_to_cargo_toml(workspace_path, features)
+}
+
+/// Public wrapper to add cargo dependencies to Cargo.toml (for horus drivers add)
+pub fn add_cargo_deps_pub(workspace_path: &Path, deps: &[String]) -> Result<()> {
+    add_cargo_deps_to_cargo_toml(workspace_path, deps)
+}
+
+/// Public wrapper to handle system dependencies (for horus drivers add)
+pub fn handle_system_deps_pub(deps: &[String]) -> Result<()> {
+    handle_system_dependencies(deps)
+}
+
+/// Public wrapper to fetch package type from registry
+pub fn fetch_package_type(package_name: &str) -> Result<String> {
+    let client = RegistryClient::new();
+    client.fetch_package_type(package_name)
+}
+
+/// Public wrapper to fetch driver metadata from registry
+pub fn fetch_driver_metadata(package_name: &str) -> Result<DriverMetadata> {
+    let client = RegistryClient::new();
+    client.fetch_driver_metadata(package_name)
 }

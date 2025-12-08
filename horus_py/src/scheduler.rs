@@ -1,6 +1,6 @@
 use crate::config::PySchedulerConfig;
 use crate::node::PyNodeInfo;
-use horus::memory::{shm_heartbeats_dir, shm_session_dir};
+use horus::memory::shm_heartbeats_dir;
 use horus::{NodeHeartbeat, NodeInfo as CoreNodeInfo};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -1619,17 +1619,12 @@ impl PyScheduler {
         }
     }
 
-    /// Clean up session directory (topics and metadata)
+    /// Clean up session directory (no-op with flat namespace)
+    ///
+    /// With the simplified flat namespace model, topics are shared globally.
+    /// Use `horus clean --shm` to remove all shared memory.
     fn cleanup_session() {
-        // Get current session ID from environment
-        if let Ok(session_id) = std::env::var("HORUS_SESSION_ID") {
-            let session_dir = shm_session_dir(&session_id);
-
-            if session_dir.exists() {
-                // Remove the entire session directory
-                let _ = fs::remove_dir_all(&session_dir);
-            }
-        }
+        // No-op: flat namespace means no session-specific cleanup needed
     }
 
     /// Get path to registry file (cross-platform)

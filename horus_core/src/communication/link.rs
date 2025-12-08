@@ -611,42 +611,42 @@ where
         Self::with_role(topic, LinkRole::Consumer)
     }
 
-    /// Create a global Link as a producer (accessible across all sessions)
+    /// Create a Link as a producer (alias for `producer`)
     ///
-    /// Global Links can communicate across different HORUS sessions.
-    /// Unlike session-scoped Links, global Links are accessible system-wide.
-    ///
-    /// Note: Global Links only support local shared memory (not network endpoints).
+    /// **Note:** With flat namespace, all Links are system-wide accessible.
+    /// This method is equivalent to `producer()` and kept for backwards compatibility.
     ///
     /// # Example
     /// ```rust,ignore
-    /// // Create a global producer accessible from any session
-    /// let output: Link<f32> = Link::producer_global("global_sensor")?;
+    /// let output: Link<f32> = Link::producer_global("sensor")?;
     /// output.send(42.0, None)?;
-    ///
-    /// // Another process/session can consume from this global Link
     /// ```
+    #[deprecated(
+        since = "0.1.7",
+        note = "Use producer() instead - all topics are now global"
+    )]
     pub fn producer_global(topic: &str) -> HorusResult<Self> {
-        Self::with_role_global(topic, LinkRole::Producer)
+        Self::producer(topic)
     }
 
-    /// Create a global Link as a consumer (accessible across all sessions)
+    /// Create a Link as a consumer (alias for `consumer`)
     ///
-    /// Global Links can communicate across different HORUS sessions.
-    /// Unlike session-scoped Links, global Links are accessible system-wide.
-    ///
-    /// Note: Global Links only support local shared memory (not network endpoints).
+    /// **Note:** With flat namespace, all Links are system-wide accessible.
+    /// This method is equivalent to `consumer()` and kept for backwards compatibility.
     ///
     /// # Example
     /// ```rust,ignore
-    /// // Create a global consumer accessible from any session
-    /// let input: Link<f32> = Link::consumer_global("global_sensor")?;
+    /// let input: Link<f32> = Link::consumer_global("sensor")?;
     /// if let Some(value) = input.recv(None) {
     ///     println!("Received: {}", value);
     /// }
     /// ```
+    #[deprecated(
+        since = "0.1.7",
+        note = "Use consumer() instead - all topics are now global"
+    )]
     pub fn consumer_global(topic: &str) -> HorusResult<Self> {
-        Self::with_role_global(topic, LinkRole::Consumer)
+        Self::consumer(topic)
     }
 
     /// Create a Link producer from configuration file
@@ -818,23 +818,6 @@ where
         Self::create_local_link(topic, role)
     }
 
-    /// Internal method to create global Link with explicit role
-    fn with_role_global(topic: &str, role: LinkRole) -> HorusResult<Self> {
-        let element_size = mem::size_of::<T>();
-
-        if element_size == 0 {
-            return Err("Cannot create Link for zero-sized types".into());
-        }
-
-        // Global Links only support local shared memory (no network)
-        if topic.contains('@') {
-            return Err("Global Links do not support network endpoints".into());
-        }
-
-        // Global shared memory
-        Self::create_global_link(topic, role)
-    }
-
     /// Create a network-based Link with smart transport selection
     ///
     /// Network v2: Automatically selects the best transport based on target:
@@ -958,29 +941,6 @@ where
 
         let link_name = format!("links/{}", topic);
         let shm_region = Arc::new(ShmRegion::new(&link_name, total_size)?);
-
-        // Use role names for logging
-        let (producer_node, consumer_node) = match role {
-            LinkRole::Producer => ("producer", "consumer"),
-            LinkRole::Consumer => ("consumer", "producer"),
-        };
-
-        Self::create_link(topic, producer_node, consumer_node, role, shm_region)
-    }
-
-    /// Create a global shared memory Link (accessible across all sessions)
-    fn create_global_link(topic: &str, role: LinkRole) -> HorusResult<Self> {
-        let element_size = mem::size_of::<T>();
-        let element_align = mem::align_of::<T>();
-        let header_size = mem::size_of::<LinkHeader>();
-
-        // Single-slot design: header + one element
-        let aligned_header_size = header_size.div_ceil(element_align) * element_align;
-        let total_size = aligned_header_size + element_size;
-
-        let link_name = format!("links/{}", topic);
-        // Use new_global() for cross-session accessibility
-        let shm_region = Arc::new(ShmRegion::new_global(&link_name, total_size)?);
 
         // Use role names for logging
         let (producer_node, consumer_node) = match role {

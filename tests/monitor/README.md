@@ -223,11 +223,12 @@ ls -la /dev/shm/horus/heartbeats/
 ### Both apps running simultaneously
 
 ```bash
-# Use session isolation
-HORUS_SESSION_ID=rust1 horus run   # Terminal 1
-HORUS_SESSION_ID=python1 horus run # Terminal 2
+# Both apps share the same global topic namespace (ROS-like)
+# Use unique topic names/prefixes to avoid conflicts:
+horus run app1/main.rs   # Uses topics like "app1.cmd_vel"
+horus run app2/main.py   # Uses topics like "app2.cmd_vel"
 
-# Each gets isolated /dev/shm/horus/sessions/{session_id}/
+# All topics visible in /dev/shm/horus/topics/
 ```
 
 ---

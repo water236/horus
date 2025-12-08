@@ -26,8 +26,13 @@
 //! ./target/release/ipc_benchmark
 //! ```
 
+use chrono;
 use colored::Colorize;
 use horus::prelude::{Hub, Link};
+use horus_benchmarks::visualization::{
+    draw_grouped_bar_chart, draw_latency_histogram, draw_latency_timeline, draw_speedup_chart,
+    AnalysisSummary,
+};
 use horus_library::messages::cmd_vel::CmdVel;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -777,11 +782,14 @@ fn main() {
     println!();
 
     // Run benchmarks for each IPC system and capture statistics
-    let (link_stats, hub_stats) = run_all_benchmarks(cpu_freq);
+    let (link_results, hub_results) = run_all_benchmarks(cpu_freq);
 
     // Convert Statistics to IpcStats for database storage
-    let link_ipc_stats = link_stats.as_ref().map(|s| s.to_ipc_stats(cpu_freq));
-    let hub_ipc_stats = hub_stats.as_ref().map(|s| s.to_ipc_stats(cpu_freq));
+    let link_ipc_stats = link_results
+        .stats
+        .as_ref()
+        .map(|s| s.to_ipc_stats(cpu_freq));
+    let hub_ipc_stats = hub_results.stats.as_ref().map(|s| s.to_ipc_stats(cpu_freq));
 
     // Determine measurement quality based on validation results
     let measurement_quality = if !tsc_verified {
@@ -930,11 +938,148 @@ fn main() {
     // Show comparison with previous runs
     print_comparison(&result);
 
+    // Generate visualizations
+    println!("\n{}", "═".repeat(80).bright_cyan());
+    println!("{}", "  GENERATING VISUALIZATIONS".bright_cyan().bold());
+    println!("{}", "═".repeat(80).bright_cyan());
+
+    if let Err(e) = generate_visualizations(cpu_freq, &link_results, &hub_results) {
+        eprintln!("Warning: Failed to generate visualizations: {}", e);
+    }
+
     println!("\n{}", "═".repeat(80).bright_cyan().bold());
     println!();
 }
 
-fn run_all_benchmarks(cpu_freq: f64) -> (Option<Statistics>, Option<Statistics>) {
+/// Generate visualization charts for the benchmark results
+fn generate_visualizations(
+    cpu_freq: f64,
+    link_results: &BenchmarkResults,
+    hub_results: &BenchmarkResults,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let output_dir = "benchmarks/results/graphs";
+    std::fs::create_dir_all(output_dir)?;
+
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+
+    // Convert cycles to ns for visualization
+    let cycles_to_ns = |cycles: u64| -> f64 { cycles as f64 / cpu_freq };
+
+    // Get stats if available
+    let link_stats = link_results.stats.as_ref();
+    let hub_stats = hub_results.stats.as_ref();
+
+    // 1. Link vs Hub comparison chart (if both have stats)
+    if let (Some(link_s), Some(hub_s)) = (link_stats, hub_stats) {
+        println!("  -> Generating Link vs Hub comparison chart...");
+        let link_median_ns = cycles_to_ns(link_s.median);
+        let hub_median_ns = cycles_to_ns(hub_s.median);
+        let link_p95_ns = cycles_to_ns(link_s.p95);
+        let hub_p95_ns = cycles_to_ns(hub_s.p95);
+        let link_p99_ns = cycles_to_ns(link_s.p99);
+        let hub_p99_ns = cycles_to_ns(hub_s.p99);
+
+        draw_grouped_bar_chart(
+            &format!("{}/ipc_comparison_{}.png", output_dir, timestamp),
+            "HORUS IPC Latency Comparison (Link vs Hub)",
+            &["Median", "P95", "P99"],
+            &[link_median_ns, link_p95_ns, link_p99_ns],
+            &[hub_median_ns, hub_p95_ns, hub_p99_ns],
+            "Link (SPSC)",
+            "Hub (MPMC)",
+            "Latency (ns)",
+        )?;
+
+        // 2. Speedup chart (Link vs Hub)
+        println!("  -> Generating speedup chart...");
+        let speedups = [
+            hub_median_ns / link_median_ns,
+            hub_p95_ns / link_p95_ns,
+            hub_p99_ns / link_p99_ns,
+        ];
+        draw_speedup_chart(
+            &format!("{}/ipc_speedup_{}.png", output_dir, timestamp),
+            "Hub Latency vs Link (Higher = Hub is Slower)",
+            &["Median", "P95", "P99"],
+            &speedups,
+        )?;
+    }
+
+    // 3. Link latency histogram (if raw data available)
+    if !link_results.raw_latencies_cycles.is_empty() {
+        println!("  -> Generating Link latency histogram...");
+        let link_latencies_ns: Vec<f64> = link_results
+            .raw_latencies_cycles
+            .iter()
+            .map(|&c| cycles_to_ns(c))
+            .collect();
+        draw_latency_histogram(
+            &format!("{}/link_histogram_{}.png", output_dir, timestamp),
+            "Link (SPSC) Latency Distribution",
+            &link_latencies_ns,
+            50,
+        )?;
+
+        // Statistical analysis
+        let analysis = AnalysisSummary::from_latencies(&link_latencies_ns);
+        analysis.print_report("Link IPC");
+
+        // 4. Link latency timeline
+        if link_latencies_ns.len() > 200 {
+            println!("  -> Generating Link latency timeline...");
+            draw_latency_timeline(
+                &format!("{}/link_timeline_{}.png", output_dir, timestamp),
+                "Link (SPSC) Latency Over Time",
+                &link_latencies_ns,
+                100,
+            )?;
+        }
+    }
+
+    // 5. Hub latency histogram (if raw data available)
+    if !hub_results.raw_latencies_cycles.is_empty() {
+        println!("  -> Generating Hub latency histogram...");
+        let hub_latencies_ns: Vec<f64> = hub_results
+            .raw_latencies_cycles
+            .iter()
+            .map(|&c| cycles_to_ns(c))
+            .collect();
+        draw_latency_histogram(
+            &format!("{}/hub_histogram_{}.png", output_dir, timestamp),
+            "Hub (MPMC) Latency Distribution",
+            &hub_latencies_ns,
+            50,
+        )?;
+
+        // Statistical analysis
+        let analysis = AnalysisSummary::from_latencies(&hub_latencies_ns);
+        analysis.print_report("Hub IPC");
+
+        // 6. Hub latency timeline
+        if hub_latencies_ns.len() > 200 {
+            println!("  -> Generating Hub latency timeline...");
+            draw_latency_timeline(
+                &format!("{}/hub_timeline_{}.png", output_dir, timestamp),
+                "Hub (MPMC) Latency Over Time",
+                &hub_latencies_ns,
+                100,
+            )?;
+        }
+    }
+
+    println!();
+    println!("  Graphs saved to: {}/", output_dir);
+
+    Ok(())
+}
+
+/// Combined benchmark results with raw latencies for visualization
+struct BenchmarkResults {
+    stats: Option<Statistics>,
+    raw_latencies_cycles: Vec<u64>,
+}
+
+fn run_all_benchmarks(cpu_freq: f64) -> (BenchmarkResults, BenchmarkResults) {
     // 1. Hub (multi-process MPMC)
     println!("\n{}", "═".repeat(80).bright_white());
     println!(
@@ -942,7 +1087,7 @@ fn run_all_benchmarks(cpu_freq: f64) -> (Option<Statistics>, Option<Statistics>)
         "  HORUS HUB (Multi-Process MPMC)".bright_white().bold()
     );
     println!("{}", "═".repeat(80).bright_white());
-    let hub_stats = run_ipc_benchmark("hub", cpu_freq);
+    let hub_results = run_ipc_benchmark("hub", cpu_freq);
 
     // 2. Link (single-process SPSC)
     println!("\n{}", "═".repeat(80).bright_white());
@@ -951,12 +1096,12 @@ fn run_all_benchmarks(cpu_freq: f64) -> (Option<Statistics>, Option<Statistics>)
         "  HORUS LINK (Single-Process SPSC)".bright_white().bold()
     );
     println!("{}", "═".repeat(80).bright_white());
-    let link_stats = run_link_benchmark(cpu_freq);
+    let link_results = run_link_benchmark(cpu_freq);
 
-    (link_stats, hub_stats)
+    (link_results, hub_results)
 }
 
-fn run_ipc_benchmark(ipc_type: &str, cpu_freq: f64) -> Option<Statistics> {
+fn run_ipc_benchmark(ipc_type: &str, cpu_freq: f64) -> BenchmarkResults {
     let mut all_latencies = Vec::new();
 
     for run in 1..=NUM_RUNS {
@@ -970,7 +1115,13 @@ fn run_ipc_benchmark(ipc_type: &str, cpu_freq: f64) -> Option<Statistics> {
         println!("{} cycles median", median_cycles);
     }
 
-    print_results(&all_latencies, cpu_freq)
+    let all_cycles: Vec<u64> = all_latencies.iter().flatten().copied().collect();
+    let stats = print_results(&all_latencies, cpu_freq);
+
+    BenchmarkResults {
+        stats,
+        raw_latencies_cycles: all_cycles,
+    }
 }
 
 /// Calculate statistics from raw measurements
@@ -1374,7 +1525,7 @@ fn hub_consumer(topic: &str, barrier_file: &str) {
 // LINK BENCHMARKS (Single-Process SPSC)
 // ============================================================================
 
-fn run_link_benchmark(cpu_freq: f64) -> Option<Statistics> {
+fn run_link_benchmark(cpu_freq: f64) -> BenchmarkResults {
     use std::thread;
 
     let mut all_latencies = Vec::new();
@@ -1496,7 +1647,13 @@ fn run_link_benchmark(cpu_freq: f64) -> Option<Statistics> {
         println!("{} cycles median", median_cycles);
     }
 
-    print_results(&all_latencies, cpu_freq)
+    let all_cycles: Vec<u64> = all_latencies.iter().flatten().copied().collect();
+    let stats = print_results(&all_latencies, cpu_freq);
+
+    BenchmarkResults {
+        stats,
+        raw_latencies_cycles: all_cycles,
+    }
 }
 
 // ============================================================================

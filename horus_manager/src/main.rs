@@ -10,6 +10,40 @@ use std::path::{Path, PathBuf};
 // Use modules from the library instead of redeclaring them
 use horus_manager::{commands, monitor, monitor_tui, registry, security, workspace};
 
+/// Calculate the total size of a directory recursively
+fn dir_size(path: &Path) -> std::io::Result<u64> {
+    let mut size = 0;
+    if path.is_dir() {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                size += dir_size(&path)?;
+            } else {
+                size += entry.metadata()?.len();
+            }
+        }
+    }
+    Ok(size)
+}
+
+/// Format a size in bytes to human-readable format
+fn format_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+
+    if bytes >= GB {
+        format!("{:.2} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.2} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.2} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "horus")]
 #[command(about = "HORUS - Hybrid Optimized Robotics Unified System")]
@@ -167,6 +201,101 @@ enum Commands {
         reset_password: bool,
     },
 
+    /// Topic interaction (list, echo, publish)
+    Topic {
+        #[command(subcommand)]
+        command: TopicCommands,
+    },
+
+    /// Node management (list, info, kill)
+    Node {
+        #[command(subcommand)]
+        command: NodeCommands,
+    },
+
+    /// Parameter management (get, set, list, delete)
+    Param {
+        #[command(subcommand)]
+        command: ParamCommands,
+    },
+
+    /// System diagnostics and health check
+    Doctor {
+        /// Show detailed diagnostic information
+        #[arg(short = 'v', long = "verbose")]
+        verbose: bool,
+    },
+
+    /// Clean build artifacts and shared memory
+    Clean {
+        /// Only clean shared memory
+        #[arg(long = "shm")]
+        shm: bool,
+
+        /// Clean everything (build cache + shared memory + horus cache)
+        #[arg(short = 'a', long = "all")]
+        all: bool,
+
+        /// Show what would be cleaned without removing anything
+        #[arg(short = 'n', long = "dry-run")]
+        dry_run: bool,
+    },
+
+    /// Launch multiple nodes from a YAML file
+    Launch {
+        /// Path to launch file (YAML)
+        file: std::path::PathBuf,
+
+        /// Show what would launch without actually launching
+        #[arg(short = 'n', long = "dry-run")]
+        dry_run: bool,
+
+        /// Namespace prefix for all nodes
+        #[arg(long = "namespace")]
+        namespace: Option<String>,
+
+        /// List nodes in the launch file without launching
+        #[arg(long = "list")]
+        list: bool,
+    },
+
+    /// Message type introspection
+    Msg {
+        #[command(subcommand)]
+        command: MsgCommands,
+    },
+
+    /// View and filter logs
+    Log {
+        /// Filter by node name
+        #[arg(value_name = "NODE")]
+        node: Option<String>,
+
+        /// Filter by log level (trace, debug, info, warn, error)
+        #[arg(short = 'l', long = "level")]
+        level: Option<String>,
+
+        /// Show logs from last duration (e.g., "5m", "1h", "30s")
+        #[arg(short = 's', long = "since")]
+        since: Option<String>,
+
+        /// Follow log output in real-time
+        #[arg(short = 'f', long = "follow")]
+        follow: bool,
+
+        /// Number of recent log entries to show
+        #[arg(short = 'n', long = "count")]
+        count: Option<usize>,
+
+        /// Clear logs instead of viewing
+        #[arg(long = "clear")]
+        clear: bool,
+
+        /// Clear all logs (including file-based logs)
+        #[arg(long = "clear-all")]
+        clear_all: bool,
+    },
+
     /// Package management
     Pkg {
         #[command(subcommand)]
@@ -257,6 +386,54 @@ enum Commands {
         command: DriversCommands,
     },
 
+    /// Add a package, driver, or plugin (smart auto-detection)
+    Add {
+        /// Package/driver/plugin name to add
+        name: String,
+        /// Specific version (optional)
+        #[arg(short = 'v', long = "ver")]
+        ver: Option<String>,
+        /// Force install as driver
+        #[arg(long = "driver", conflicts_with = "plugin")]
+        driver: bool,
+        /// Force install as plugin
+        #[arg(long = "plugin", conflicts_with = "driver")]
+        plugin: bool,
+        /// Force local installation (default for drivers/packages)
+        #[arg(long = "local", conflicts_with = "global")]
+        local: bool,
+        /// Force global installation (default for plugins)
+        #[arg(short = 'g', long = "global", conflicts_with = "local")]
+        global: bool,
+        /// Skip installing system dependencies
+        #[arg(long = "no-system")]
+        no_system: bool,
+    },
+
+    /// Remove a package, driver, or plugin
+    Remove {
+        /// Package/driver/plugin name to remove
+        name: String,
+        /// Remove from global scope
+        #[arg(short = 'g', long = "global")]
+        global: bool,
+        /// Also remove unused dependencies
+        #[arg(long = "purge")]
+        purge: bool,
+    },
+
+    /// Plugin management (list, enable, disable)
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCommands,
+    },
+
+    /// Cache management (info, clean, purge)
+    Cache {
+        #[command(subcommand)]
+        command: CacheCommands,
+    },
+
     /// Record/replay management for debugging and testing
     Record {
         #[command(subcommand)]
@@ -330,6 +507,16 @@ enum PkgCommands {
         #[arg(short = 'y', long = "yes")]
         yes: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum PluginCommands {
+    /// List installed plugins
+    List {
+        /// Show all plugins including disabled
+        #[arg(short = 'a', long = "all")]
+        all: bool,
+    },
 
     /// Enable a disabled plugin
     Enable {
@@ -351,13 +538,29 @@ enum PkgCommands {
         /// Specific plugin to verify (optional, verifies all if not specified)
         plugin: Option<String>,
     },
+}
 
-    /// List installed plugins
-    Plugins {
-        /// Show all plugins including disabled
-        #[arg(short = 'a', long = "all")]
-        all: bool,
+#[derive(Subcommand)]
+enum CacheCommands {
+    /// Show cache information (size, packages, disk usage)
+    Info,
+
+    /// Remove unused packages from cache
+    Clean {
+        /// Show what would be removed without actually removing
+        #[arg(short = 'n', long = "dry-run")]
+        dry_run: bool,
     },
+
+    /// Remove ALL packages from cache (nuclear option)
+    Purge {
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
+    },
+
+    /// List all cached packages
+    List,
 }
 
 #[derive(Subcommand)]
@@ -401,11 +604,14 @@ enum AuthCommands {
 
 #[derive(Subcommand)]
 enum DriversCommands {
-    /// List all available drivers
+    /// List all available drivers (local + registry)
     List {
         /// Filter by category (sensor, actuator, bus, input, simulation)
         #[arg(short = 'c', long = "category")]
         category: Option<String>,
+        /// Show only registry drivers (not local built-ins)
+        #[arg(short = 'r', long = "registry")]
+        registry_only: bool,
     },
 
     /// Show detailed information about a driver
@@ -414,10 +620,13 @@ enum DriversCommands {
         driver: String,
     },
 
-    /// Search for drivers
+    /// Search for drivers (searches registry)
     Search {
         /// Search query
         query: String,
+        /// Filter by bus type (usb, i2c, spi, serial)
+        #[arg(short = 'b', long = "bus")]
+        bus_type: Option<String>,
     },
 }
 
@@ -491,6 +700,195 @@ enum RecordCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum TopicCommands {
+    /// List all active topics
+    List {
+        /// Show detailed information
+        #[arg(short = 'v', long = "verbose")]
+        verbose: bool,
+
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
+    },
+
+    /// Echo messages from a topic
+    Echo {
+        /// Topic name
+        name: String,
+
+        /// Number of messages to echo (optional)
+        #[arg(short = 'n', long = "count")]
+        count: Option<usize>,
+
+        /// Maximum rate in Hz (optional)
+        #[arg(short = 'r', long = "rate")]
+        rate: Option<f64>,
+    },
+
+    /// Show detailed info about a topic
+    Info {
+        /// Topic name
+        name: String,
+    },
+
+    /// Measure topic publish rate
+    Hz {
+        /// Topic name
+        name: String,
+
+        /// Window size for averaging (default: 10)
+        #[arg(short = 'w', long = "window")]
+        window: Option<usize>,
+    },
+
+    /// Publish a message to a topic (for testing)
+    Pub {
+        /// Topic name
+        name: String,
+
+        /// Message content
+        message: String,
+
+        /// Publish rate in Hz (optional)
+        #[arg(short = 'r', long = "rate")]
+        rate: Option<f64>,
+
+        /// Number of messages to publish (default: 1)
+        #[arg(short = 'n', long = "count")]
+        count: Option<usize>,
+    },
+}
+
+#[derive(Subcommand)]
+enum NodeCommands {
+    /// List all running nodes
+    List {
+        /// Show detailed information
+        #[arg(short = 'v', long = "verbose")]
+        verbose: bool,
+
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
+
+        /// Filter by category (node, tool, cli)
+        #[arg(short = 'c', long = "category")]
+        category: Option<String>,
+    },
+
+    /// Show detailed info about a node
+    Info {
+        /// Node name
+        name: String,
+    },
+
+    /// Kill a running node
+    Kill {
+        /// Node name
+        name: String,
+
+        /// Force kill (SIGKILL instead of SIGTERM)
+        #[arg(short = 'f', long = "force")]
+        force: bool,
+    },
+
+    /// Restart a node (kill and let scheduler restart)
+    Restart {
+        /// Node name
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ParamCommands {
+    /// List all parameters
+    List {
+        /// Show detailed information (description, unit, validation)
+        #[arg(short = 'v', long = "verbose")]
+        verbose: bool,
+
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
+    },
+
+    /// Get a parameter value
+    Get {
+        /// Parameter key
+        key: String,
+
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
+    },
+
+    /// Set a parameter value
+    Set {
+        /// Parameter key
+        key: String,
+
+        /// Parameter value (auto-detected type: bool, int, float, string, or JSON)
+        value: String,
+    },
+
+    /// Delete a parameter
+    Delete {
+        /// Parameter key
+        key: String,
+    },
+
+    /// Reset all parameters to defaults
+    Reset {
+        /// Force reset without confirmation
+        #[arg(short = 'f', long = "force")]
+        force: bool,
+    },
+
+    /// Load parameters from a YAML file
+    Load {
+        /// Path to YAML file
+        file: std::path::PathBuf,
+    },
+
+    /// Save parameters to a YAML file
+    Save {
+        /// Path to YAML file (default: .horus/config/params.yaml)
+        #[arg(short = 'o', long = "output")]
+        file: Option<std::path::PathBuf>,
+    },
+
+    /// Dump all parameters as YAML to stdout
+    Dump,
+}
+
+#[derive(Subcommand)]
+enum MsgCommands {
+    /// List all message types
+    List {
+        /// Show detailed information
+        #[arg(short = 'v', long = "verbose")]
+        verbose: bool,
+
+        /// Filter by name or module
+        #[arg(short = 'f', long = "filter")]
+        filter: Option<String>,
+    },
+
+    /// Show message type definition
+    Show {
+        /// Message type name
+        name: String,
+    },
+
+    /// Show message type MD5 hash
+    Md5 {
+        /// Message type name
+        name: String,
+    },
+}
+
 /// Parse override argument in format "node.output=value"
 fn parse_override(s: &str) -> Result<(String, String, String), String> {
     let parts: Vec<&str> = s.splitn(2, '=').collect();
@@ -529,6 +927,13 @@ fn main() {
                 | "run"
                 | "check"
                 | "monitor"
+                | "topic"
+                | "node"
+                | "doctor"
+                | "clean"
+                | "launch"
+                | "msg"
+                | "log"
                 | "pkg"
                 | "env"
                 | "auth"
@@ -1966,6 +2371,90 @@ except ImportError as e:
             }
         }
 
+        Commands::Topic { command } => match command {
+            TopicCommands::List { verbose, json } => commands::topic::list_topics(verbose, json),
+            TopicCommands::Echo { name, count, rate } => {
+                commands::topic::echo_topic(&name, count, rate)
+            }
+            TopicCommands::Info { name } => commands::topic::topic_info(&name),
+            TopicCommands::Hz { name, window } => commands::topic::topic_hz(&name, window),
+            TopicCommands::Pub {
+                name,
+                message,
+                rate,
+                count,
+            } => commands::topic::publish_topic(&name, &message, rate, count),
+        },
+
+        Commands::Node { command } => match command {
+            NodeCommands::List {
+                verbose,
+                json,
+                category,
+            } => commands::node::list_nodes(verbose, json, category),
+            NodeCommands::Info { name } => commands::node::node_info(&name),
+            NodeCommands::Kill { name, force } => commands::node::kill_node(&name, force),
+            NodeCommands::Restart { name } => commands::node::restart_node(&name),
+        },
+
+        Commands::Param { command } => match command {
+            ParamCommands::List { verbose, json } => commands::param::list_params(verbose, json),
+            ParamCommands::Get { key, json } => commands::param::get_param(&key, json),
+            ParamCommands::Set { key, value } => commands::param::set_param(&key, &value),
+            ParamCommands::Delete { key } => commands::param::delete_param(&key),
+            ParamCommands::Reset { force } => commands::param::reset_params(force),
+            ParamCommands::Load { file } => commands::param::load_params(&file),
+            ParamCommands::Save { file } => commands::param::save_params(file.as_deref()),
+            ParamCommands::Dump => commands::param::dump_params(),
+        },
+
+        Commands::Doctor { verbose } => commands::doctor::run_doctor(verbose),
+
+        Commands::Clean { shm, all, dry_run } => commands::clean::run_clean(shm, all, dry_run),
+
+        Commands::Launch {
+            file,
+            dry_run,
+            namespace,
+            list,
+        } => {
+            if list {
+                commands::launch::list_launch_nodes(&file)
+            } else {
+                commands::launch::run_launch(&file, dry_run, namespace)
+            }
+        }
+
+        Commands::Msg { command } => match command {
+            MsgCommands::List { verbose, filter } => {
+                commands::msg::list_messages(verbose, filter.as_deref())
+            }
+            MsgCommands::Show { name } => commands::msg::show_message(&name),
+            MsgCommands::Md5 { name } => commands::msg::message_hash(&name),
+        },
+
+        Commands::Log {
+            node,
+            level,
+            since,
+            follow,
+            count,
+            clear,
+            clear_all,
+        } => {
+            if clear || clear_all {
+                commands::log::clear_logs(clear_all)
+            } else {
+                commands::log::view_logs(
+                    node.as_deref(),
+                    level.as_deref(),
+                    since.as_deref(),
+                    follow,
+                    count,
+                )
+            }
+        }
+
         Commands::Pkg { command } => {
             match command {
                 PkgCommands::Install {
@@ -2704,23 +3193,6 @@ except ImportError as e:
                     println!("   The package is no longer available on the registry");
 
                     Ok(())
-                }
-
-                PkgCommands::Enable { command } => commands::pkg::enable_plugin(&command)
-                    .map_err(|e| HorusError::Config(e.to_string())),
-
-                PkgCommands::Disable { command, reason } => {
-                    commands::pkg::disable_plugin(&command, reason.as_deref())
-                        .map_err(|e| HorusError::Config(e.to_string()))
-                }
-
-                PkgCommands::Verify { plugin } => commands::pkg::verify_plugins(plugin.as_deref())
-                    .map_err(|e| HorusError::Config(e.to_string())),
-
-                PkgCommands::Plugins { all: _ } => {
-                    // Show both global and project plugins
-                    commands::pkg::list_plugins(true, true)
-                        .map_err(|e| HorusError::Config(e.to_string()))
                 }
             }
         }
@@ -3467,45 +3939,84 @@ except ImportError as e:
             ];
 
             match command {
-                DriversCommands::List { category } => {
-                    let drivers: Vec<_> = if let Some(cat_str) = category {
-                        let cat_lower = cat_str.to_lowercase();
-                        let cat_match = match cat_lower.as_str() {
-                            "sensor" | "sensors" => "Sensor",
-                            "actuator" | "actuators" => "Actuator",
-                            "bus" | "buses" => "Bus",
-                            "input" | "inputs" => "Input",
-                            "simulation" | "sim" => "Simulation",
-                            _ => {
-                                println!("{} Unknown category: {}", "[WARN]".yellow(), cat_str);
-                                println!(
-                                    "       Valid categories: sensor, actuator, bus, input, simulation"
-                                );
-                                return Ok(());
-                            }
+                DriversCommands::List {
+                    category,
+                    registry_only,
+                } => {
+                    // Show local built-in drivers unless --registry flag
+                    if !registry_only {
+                        let drivers: Vec<_> = if let Some(cat_str) = &category {
+                            let cat_lower = cat_str.to_lowercase();
+                            let cat_match = match cat_lower.as_str() {
+                                "sensor" | "sensors" => "Sensor",
+                                "actuator" | "actuators" => "Actuator",
+                                "bus" | "buses" => "Bus",
+                                "input" | "inputs" => "Input",
+                                "simulation" | "sim" => "Simulation",
+                                _ => {
+                                    println!("{} Unknown category: {}", "[WARN]".yellow(), cat_str);
+                                    println!(
+                                        "       Valid categories: sensor, actuator, bus, input, simulation"
+                                    );
+                                    return Ok(());
+                                }
+                            };
+                            built_in_drivers
+                                .iter()
+                                .filter(|d| d.category == cat_match)
+                                .collect()
+                        } else {
+                            built_in_drivers.iter().collect()
                         };
-                        built_in_drivers
-                            .iter()
-                            .filter(|d| d.category == cat_match)
-                            .collect()
-                    } else {
-                        built_in_drivers.iter().collect()
-                    };
 
-                    if drivers.is_empty() {
-                        println!("{} No drivers found for this category.", "".cyan());
-                    } else {
-                        println!("{} Available Drivers:\n", "".cyan().bold());
-                        for driver in &drivers {
-                            println!(
-                                "  {} {} ({})",
-                                "".green(),
-                                driver.id.yellow(),
-                                driver.category
-                            );
-                            if !driver.description.is_empty() {
-                                println!("     {}", driver.description.dimmed());
+                        if !drivers.is_empty() {
+                            println!("{} Built-in Drivers:\n", "[BUILD]".cyan().bold());
+                            for driver in &drivers {
+                                println!(
+                                    "  {} {} ({})",
+                                    "-".green(),
+                                    driver.id.yellow(),
+                                    driver.category
+                                );
+                                if !driver.description.is_empty() {
+                                    println!("     {}", driver.description.dimmed());
+                                }
                             }
+                            println!();
+                        }
+                    }
+
+                    // Also fetch from registry
+                    println!("{} Fetching drivers from registry...", "[NET]".cyan());
+                    let client = registry::RegistryClient::new();
+                    match client.list_drivers(category.as_deref()) {
+                        Ok(registry_drivers) => {
+                            if registry_drivers.is_empty() {
+                                println!("  No additional drivers in registry.");
+                            } else {
+                                println!(
+                                    "\n{} Registry Drivers ({} available):\n",
+                                    "[PKG]".cyan().bold(),
+                                    registry_drivers.len()
+                                );
+                                for d in registry_drivers {
+                                    let bus = d.bus_type.as_deref().unwrap_or("unknown");
+                                    let cat = d.category.as_deref().unwrap_or("driver");
+                                    println!(
+                                        "  {} {} ({}, {})",
+                                        "-".green(),
+                                        d.name.yellow(),
+                                        cat,
+                                        bus.dimmed()
+                                    );
+                                    if let Some(desc) = &d.description {
+                                        println!("     {}", desc.dimmed());
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            println!("  {} Could not fetch registry: {}", "[WARN]".yellow(), e);
                         }
                     }
                     Ok(())
@@ -3514,30 +4025,96 @@ except ImportError as e:
                 DriversCommands::Info { driver } => {
                     // Check if it's an alias first
                     if let Some(expanded) = resolve_driver_alias_local(&driver) {
-                        println!("{} Driver Alias: {}\n", "".cyan().bold(), driver.yellow());
+                        println!(
+                            "{} Driver Alias: {}\n",
+                            "[LINK]".cyan().bold(),
+                            driver.yellow()
+                        );
                         println!("  Expands to: {}", expanded.join(", ").green());
                         return Ok(());
                     }
 
-                    // Look up driver info
+                    // Look up in local built-ins first
                     if let Some(info) = built_in_drivers.iter().find(|d| d.id == driver) {
-                        println!("{} Driver: {}\n", "".cyan().bold(), info.name.yellow());
+                        println!(
+                            "{} Driver: {} (built-in)\n",
+                            "[BUILD]".cyan().bold(),
+                            info.name.yellow()
+                        );
                         println!("  ID:       {}", info.id);
                         println!("  Category: {}", info.category);
                         if !info.description.is_empty() {
                             println!("  Desc:     {}", info.description);
                         }
-                    } else {
-                        println!("{} Driver '{}' not found.", "[WARN]".yellow(), driver);
-                        println!("\nUse 'horus drivers list' to see available drivers.");
+                        return Ok(());
+                    }
+
+                    // Try registry
+                    println!("{} Looking up '{}' in registry...", "[NET]".cyan(), driver);
+                    let client = registry::RegistryClient::new();
+                    match client.fetch_driver_metadata(&driver) {
+                        Ok(meta) => {
+                            println!("\n{} Driver: {}\n", "[PKG]".cyan().bold(), driver.yellow());
+                            if let Some(bus) = &meta.bus_type {
+                                println!("  Bus Type:  {}", bus);
+                            }
+                            if let Some(cat) = &meta.driver_category {
+                                println!("  Category:  {}", cat);
+                            }
+
+                            // Show dependencies
+                            if let Some(features) = &meta.required_features {
+                                if !features.is_empty() {
+                                    println!("\n  {} Cargo Features:", "[BUILD]".cyan());
+                                    for f in features {
+                                        println!("    • {}", f.yellow());
+                                    }
+                                }
+                            }
+                            if let Some(cargo_deps) = &meta.cargo_dependencies {
+                                if !cargo_deps.is_empty() {
+                                    println!("\n  {} Cargo Dependencies:", "[PKG]".cyan());
+                                    for d in cargo_deps {
+                                        println!("    • {}", d);
+                                    }
+                                }
+                            }
+                            if let Some(py_deps) = &meta.python_dependencies {
+                                if !py_deps.is_empty() {
+                                    println!("\n  {} Python Dependencies:", "[PY]".cyan());
+                                    for d in py_deps {
+                                        println!("    • {}", d);
+                                    }
+                                }
+                            }
+                            if let Some(sys_deps) = &meta.system_dependencies {
+                                if !sys_deps.is_empty() {
+                                    println!("\n  {} System Packages:", "[SYS]".cyan());
+                                    for d in sys_deps {
+                                        println!("    • {}", d);
+                                    }
+                                }
+                            }
+
+                            println!(
+                                "\n  {} To add: horus drivers add {}",
+                                "[TIP]".green(),
+                                driver
+                            );
+                        }
+                        Err(_) => {
+                            println!("{} Driver '{}' not found.", "[WARN]".yellow(), driver);
+                            println!("\nUse 'horus drivers list' to see available drivers.");
+                            println!("Use 'horus drivers search <query>' to search.");
+                        }
                     }
                     Ok(())
                 }
 
-                DriversCommands::Search { query } => {
+                DriversCommands::Search { query, bus_type } => {
+                    // Search local first
                     let query_lower = query.to_lowercase();
-
-                    let matches: Vec<_> = built_in_drivers
+                    let local_matches: Vec<_> = built_in_drivers
                         .iter()
                         .filter(|d| {
                             d.id.to_lowercase().contains(&query_lower)
@@ -3546,19 +4123,381 @@ except ImportError as e:
                         })
                         .collect();
 
-                    if matches.is_empty() {
-                        println!("{} No drivers found matching '{}'", "[INFO]".cyan(), query);
-                    } else {
-                        println!(
-                            "{} Found {} driver(s) matching '{}':\n",
-                            "".green(),
-                            matches.len(),
-                            query
-                        );
-                        for driver in matches {
-                            println!("  {} {} - {}", "".green(), driver.id.yellow(), driver.name);
+                    if !local_matches.is_empty() {
+                        println!("{} Built-in matches:\n", "[BUILD]".cyan().bold());
+                        for driver in &local_matches {
+                            println!("  {} {} - {}", "-".green(), driver.id.yellow(), driver.name);
+                        }
+                        println!();
+                    }
+
+                    // Search registry
+                    println!("{} Searching registry for '{}'...", "[NET]".cyan(), query);
+                    let client = registry::RegistryClient::new();
+                    match client.search_drivers(&query, bus_type.as_deref()) {
+                        Ok(results) => {
+                            if results.is_empty() {
+                                println!("  No matches in registry.");
+                            } else {
+                                println!(
+                                    "\n{} Registry matches ({}):\n",
+                                    "[PKG]".cyan().bold(),
+                                    results.len()
+                                );
+                                for d in results {
+                                    let bus = d.bus_type.as_deref().unwrap_or("?");
+                                    println!(
+                                        "  {} {} [{}]",
+                                        "-".green(),
+                                        d.name.yellow(),
+                                        bus.dimmed()
+                                    );
+                                    if let Some(desc) = &d.description {
+                                        println!("     {}", desc.dimmed());
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            println!("  {} Could not search registry: {}", "[WARN]".yellow(), e);
                         }
                     }
+                    Ok(())
+                }
+            }
+        }
+
+        Commands::Add {
+            name,
+            ver,
+            driver,
+            plugin,
+            local: _,
+            global: _,
+            no_system: _,
+        } => {
+            // Add dependency to horus.yaml (does NOT install - deferred to `horus run`)
+            // Following cargo/uv model: `add` edits manifest, `run/build` installs
+
+            // Find horus.yaml in current directory or workspace
+            let workspace_path = workspace::find_workspace_root()
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            let horus_yaml_path = workspace_path.join("horus.yaml");
+
+            if !horus_yaml_path.exists() {
+                return Err(HorusError::Config(format!(
+                    "No horus.yaml found. Run 'horus init' or 'horus new' first."
+                )));
+            }
+
+            // Determine package type - either from flags or auto-detect from registry
+            let pkg_type = if driver {
+                "driver".to_string()
+            } else if plugin {
+                "plugin".to_string()
+            } else {
+                // Auto-detect from registry
+                registry::fetch_package_type(&name).unwrap_or_else(|_| "node".to_string())
+            };
+
+            let version = ver.as_deref().unwrap_or("latest");
+
+            // Format dependency string based on type
+            let dep_string = match pkg_type.as_str() {
+                "driver" => format!("driver:{}@{}", name, version),
+                "plugin" => format!("plugin:{}@{}", name, version),
+                _ => {
+                    if version == "latest" {
+                        name.clone()
+                    } else {
+                        format!("{}@{}", name, version)
+                    }
+                }
+            };
+
+            // Add to horus.yaml
+            match horus_manager::yaml_utils::add_dependency_to_horus_yaml(
+                &horus_yaml_path,
+                &dep_string,
+                version,
+            ) {
+                Ok(_) => {
+                    println!("{} Added '{}' to horus.yaml", "✓".green(), name.cyan());
+                    println!("  Type: {}", pkg_type.dimmed());
+                    if version != "latest" {
+                        println!("  Version: {}", version.dimmed());
+                    }
+                    println!();
+                    println!("Run {} to install dependencies.", "horus run".cyan().bold());
+                }
+                Err(e) => {
+                    return Err(HorusError::Config(format!(
+                        "Failed to update horus.yaml: {}",
+                        e
+                    )));
+                }
+            }
+
+            Ok(())
+        }
+
+        Commands::Remove {
+            name,
+            global: _,
+            purge: _,
+        } => {
+            // Remove dependency from horus.yaml (does NOT delete from cache)
+            // Following cargo/uv model: cache stays, only manifest changes
+            // Use `horus cache clean` to remove unused packages
+
+            // Find horus.yaml in current directory or workspace
+            let workspace_path = workspace::find_workspace_root()
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            let horus_yaml_path = workspace_path.join("horus.yaml");
+
+            if !horus_yaml_path.exists() {
+                return Err(HorusError::Config(format!(
+                    "No horus.yaml found in current directory or workspace."
+                )));
+            }
+
+            // Remove from horus.yaml
+            match horus_manager::yaml_utils::remove_dependency_from_horus_yaml(
+                &horus_yaml_path,
+                &name,
+            ) {
+                Ok(_) => {
+                    println!("{} Removed '{}' from horus.yaml", "✓".green(), name.cyan());
+                    println!();
+                    println!("Note: Package remains in cache (~/.horus/cache/).");
+                    println!(
+                        "Run {} to clean unused packages.",
+                        "horus cache clean".dimmed()
+                    );
+                }
+                Err(e) => {
+                    // Check if it's a "not found" error
+                    let err_str = e.to_string();
+                    if err_str.contains("not found") {
+                        println!("{} '{}' is not in horus.yaml", "!".yellow(), name);
+                    } else {
+                        return Err(HorusError::Config(format!(
+                            "Failed to update horus.yaml: {}",
+                            e
+                        )));
+                    }
+                }
+            }
+
+            Ok(())
+        }
+
+        Commands::Plugin { command } => match command {
+            PluginCommands::List { all } => commands::pkg::list_plugins(true, all)
+                .map_err(|e| HorusError::Config(e.to_string())),
+
+            PluginCommands::Enable { command } => commands::pkg::enable_plugin(&command)
+                .map_err(|e| HorusError::Config(e.to_string())),
+
+            PluginCommands::Disable { command, reason } => {
+                commands::pkg::disable_plugin(&command, reason.as_deref())
+                    .map_err(|e| HorusError::Config(e.to_string()))
+            }
+
+            PluginCommands::Verify { plugin } => commands::pkg::verify_plugins(plugin.as_deref())
+                .map_err(|e| HorusError::Config(e.to_string())),
+        },
+
+        Commands::Cache { command } => {
+            let home = dirs::home_dir()
+                .ok_or_else(|| HorusError::Config("Could not find home directory".to_string()))?;
+            let cache_dir = home.join(".horus/cache");
+
+            match command {
+                CacheCommands::Info => {
+                    println!("{}", "HORUS Cache Information".cyan().bold());
+                    println!("{}", "═".repeat(40));
+
+                    if !cache_dir.exists() {
+                        println!("Cache directory: {} (not created yet)", cache_dir.display());
+                        println!("Total size: 0 B");
+                        println!("Packages: 0");
+                        return Ok(());
+                    }
+
+                    println!("Cache directory: {}", cache_dir.display());
+
+                    // Count packages and calculate size
+                    let mut total_size: u64 = 0;
+                    let mut package_count = 0;
+
+                    if let Ok(entries) = fs::read_dir(&cache_dir) {
+                        for entry in entries.flatten() {
+                            if entry.path().is_dir() {
+                                package_count += 1;
+                                // Calculate directory size
+                                if let Ok(size) = dir_size(&entry.path()) {
+                                    total_size += size;
+                                }
+                            }
+                        }
+                    }
+
+                    println!("Total size: {}", format_size(total_size));
+                    println!("Packages: {}", package_count);
+
+                    Ok(())
+                }
+
+                CacheCommands::List => {
+                    println!("{}", "Cached Packages".cyan().bold());
+                    println!("{}", "─".repeat(60));
+
+                    if !cache_dir.exists() {
+                        println!("  (cache is empty)");
+                        return Ok(());
+                    }
+
+                    let mut packages: Vec<_> = fs::read_dir(&cache_dir)
+                        .map_err(|e| HorusError::Config(e.to_string()))?
+                        .filter_map(|e| e.ok())
+                        .filter(|e| e.path().is_dir())
+                        .collect();
+
+                    packages.sort_by_key(|e| e.file_name());
+
+                    if packages.is_empty() {
+                        println!("  (cache is empty)");
+                    } else {
+                        for entry in packages {
+                            let name = entry.file_name().to_string_lossy().to_string();
+                            let size = dir_size(&entry.path()).unwrap_or(0);
+                            println!("  {} {}", name.yellow(), format_size(size).dimmed());
+                        }
+                    }
+
+                    Ok(())
+                }
+
+                CacheCommands::Clean { dry_run } => {
+                    println!("{} Scanning for unused packages...", "[CACHE]".cyan());
+
+                    if !cache_dir.exists() {
+                        println!("Cache is empty, nothing to clean.");
+                        return Ok(());
+                    }
+
+                    // Find all workspaces and their dependencies
+                    let registry = workspace::WorkspaceRegistry::load()
+                        .map_err(|e| HorusError::Config(e.to_string()))?;
+
+                    let mut used_packages: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
+
+                    for ws in &registry.workspaces {
+                        let yaml_path = ws.path.join("horus.yaml");
+                        if yaml_path.exists() {
+                            if let Ok(deps) =
+                                horus_manager::commands::run::parse_horus_yaml_dependencies_v2(
+                                    yaml_path.to_str().unwrap_or(""),
+                                )
+                            {
+                                for dep in deps {
+                                    // Extract package name from dependency spec
+                                    used_packages.insert(dep.name.clone());
+                                }
+                            }
+                        }
+                    }
+
+                    // Find cached packages not in use
+                    let mut to_remove = Vec::new();
+                    let mut freed_size: u64 = 0;
+
+                    if let Ok(entries) = fs::read_dir(&cache_dir) {
+                        for entry in entries.flatten() {
+                            if entry.path().is_dir() {
+                                let name = entry.file_name().to_string_lossy().to_string();
+                                let pkg_base = name.split('@').next().unwrap_or(&name);
+
+                                if !used_packages.contains(pkg_base) {
+                                    let size = dir_size(&entry.path()).unwrap_or(0);
+                                    freed_size += size;
+                                    to_remove.push((entry.path(), name, size));
+                                }
+                            }
+                        }
+                    }
+
+                    if to_remove.is_empty() {
+                        println!("{} All cached packages are in use.", "✓".green());
+                        return Ok(());
+                    }
+
+                    println!("\nUnused packages:");
+                    for (_, name, size) in &to_remove {
+                        println!("  {} {} ({})", "×".red(), name, format_size(*size));
+                    }
+                    println!("\nTotal to free: {}", format_size(freed_size).green());
+
+                    if dry_run {
+                        println!("\n{} Dry run - no files removed.", "[DRY]".yellow());
+                    } else {
+                        for (path, name, _) in &to_remove {
+                            if let Err(e) = fs::remove_dir_all(path) {
+                                println!("  {} Failed to remove {}: {}", "!".red(), name, e);
+                            }
+                        }
+                        println!(
+                            "\n{} Removed {} packages, freed {}.",
+                            "✓".green(),
+                            to_remove.len(),
+                            format_size(freed_size)
+                        );
+                    }
+
+                    Ok(())
+                }
+
+                CacheCommands::Purge { yes } => {
+                    if !cache_dir.exists() {
+                        println!("Cache is already empty.");
+                        return Ok(());
+                    }
+
+                    let total_size = dir_size(&cache_dir).unwrap_or(0);
+                    let count = fs::read_dir(&cache_dir).map(|e| e.count()).unwrap_or(0);
+
+                    println!(
+                        "{} This will remove ALL cached packages:",
+                        "[WARN]".yellow().bold()
+                    );
+                    println!("  Packages: {}", count);
+                    println!("  Size: {}", format_size(total_size));
+                    println!();
+
+                    if !yes {
+                        print!("Continue? [y/N] ");
+                        use std::io::Write;
+                        std::io::stdout().flush().ok();
+
+                        let mut input = String::new();
+                        std::io::stdin().read_line(&mut input).ok();
+
+                        if !input.trim().eq_ignore_ascii_case("y") {
+                            println!("Aborted.");
+                            return Ok(());
+                        }
+                    }
+
+                    fs::remove_dir_all(&cache_dir)
+                        .map_err(|e| HorusError::Config(format!("Failed to purge cache: {}", e)))?;
+
+                    println!(
+                        "{} Cache purged. Freed {}.",
+                        "✓".green(),
+                        format_size(total_size)
+                    );
                     Ok(())
                 }
             }

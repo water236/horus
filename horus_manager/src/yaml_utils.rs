@@ -20,8 +20,17 @@ pub fn add_dependency_to_horus_yaml(
         }
     }
 
-    let deps_idx = deps_line_idx
-        .ok_or_else(|| anyhow::anyhow!("No dependencies section found in horus.yaml"))?;
+    // If no dependencies section exists, create one at the end
+    let deps_idx = if let Some(idx) = deps_line_idx {
+        idx
+    } else {
+        // Add empty line and dependencies section at the end
+        if !lines.is_empty() && !lines.last().map(|l| l.is_empty()).unwrap_or(true) {
+            lines.push(String::new());
+        }
+        lines.push("dependencies:".to_string());
+        lines.len() - 1
+    };
 
     // Check if it's an empty array: dependencies: []
     let deps_line = &lines[deps_idx];
@@ -71,10 +80,16 @@ pub fn remove_dependency_from_horus_yaml(horus_yaml_path: &Path, package_name: &
     let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
 
     // Find and remove the dependency line
-    let dep_prefix = format!("  - {}@", package_name);
+    // Match patterns like "- numpy@latest" or "- numpy" (without version)
+    let dep_with_version = format!("- {}@", package_name);
+    let dep_exact = format!("- {}", package_name);
     let mut new_lines: Vec<String> = lines
         .iter()
-        .filter(|line| !line.trim().starts_with(&dep_prefix))
+        .filter(|line| {
+            let trimmed = line.trim();
+            // Keep the line if it doesn't match our package
+            !(trimmed.starts_with(&dep_with_version) || trimmed == dep_exact)
+        })
         .cloned()
         .collect();
 

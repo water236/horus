@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 ///
 /// Used for commanding robot motion in 3D space. For 2D robots,
 /// only x (forward) and yaw (rotation) are typically used.
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 pub struct Twist {
     /// Linear velocity [x, y, z] in m/s
@@ -52,6 +55,9 @@ impl Twist {
 /// 2D pose representation (position and orientation)
 ///
 /// Commonly used for mobile robots operating in planar environments.
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 pub struct Pose2D {
     /// X position in meters
@@ -110,6 +116,9 @@ impl Pose2D {
 ///
 /// Represents a full 3D transformation using translation vector and
 /// quaternion rotation. Used for coordinate frame transformations.
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 pub struct Transform {
     /// Translation [x, y, z] in meters
@@ -173,6 +182,9 @@ impl Transform {
 }
 
 /// 3D point representation
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 pub struct Point3 {
     pub x: f64,
@@ -198,6 +210,9 @@ impl Point3 {
 }
 
 /// 3D vector representation
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 pub struct Vector3 {
     pub x: f64,
@@ -241,6 +256,9 @@ impl Vector3 {
 }
 
 /// Quaternion for 3D rotation representation
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Quaternion {
     pub x: f64,
@@ -330,3 +348,34 @@ impl LogSummary for Quaternion {
         format!("{:?}", self)
     }
 }
+
+// =============================================================================
+// POD (Plain Old Data) Message Support
+// =============================================================================
+// These implementations enable ultra-fast zero-serialization transfer (~50ns)
+// for real-time robotics control loops. Use with PodLink for maximum performance.
+
+// Bytemuck implementations for safe byte casting
+unsafe impl bytemuck::Pod for Twist {}
+unsafe impl bytemuck::Zeroable for Twist {}
+unsafe impl horus_core::communication::PodMessage for Twist {}
+
+unsafe impl bytemuck::Pod for Pose2D {}
+unsafe impl bytemuck::Zeroable for Pose2D {}
+unsafe impl horus_core::communication::PodMessage for Pose2D {}
+
+unsafe impl bytemuck::Pod for Transform {}
+unsafe impl bytemuck::Zeroable for Transform {}
+unsafe impl horus_core::communication::PodMessage for Transform {}
+
+unsafe impl bytemuck::Pod for Point3 {}
+unsafe impl bytemuck::Zeroable for Point3 {}
+unsafe impl horus_core::communication::PodMessage for Point3 {}
+
+unsafe impl bytemuck::Pod for Vector3 {}
+unsafe impl bytemuck::Zeroable for Vector3 {}
+unsafe impl horus_core::communication::PodMessage for Vector3 {}
+
+unsafe impl bytemuck::Pod for Quaternion {}
+unsafe impl bytemuck::Zeroable for Quaternion {}
+unsafe impl horus_core::communication::PodMessage for Quaternion {}

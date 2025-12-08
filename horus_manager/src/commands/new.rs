@@ -260,9 +260,6 @@ fn create_horus_yaml(
         _ => "",
     };
 
-    // Generate session_id from project name (sanitized for use as identifier)
-    let session_id = format!("{}-session", name.replace('_', "-"));
-
     let content = format!(
         r#"name: {}
 version: 0.1.6
@@ -271,7 +268,6 @@ author: {}
 license: Apache-2.0
 language: {}
 horus_id: null  # Auto-generated on first dependency resolution
-session_id: "{}"  # Shared session for multi-process communication
 
 {}
 # Optional: Ignore files, directories, and packages during horus run/check
@@ -287,7 +283,7 @@ session_id: "{}"  # Shared session for multi-process communication
 #     - "ipython"
 #     - "jupyter"
 "#,
-        name, description, author, language, session_id, dependencies
+        name, description, author, language, dependencies
     );
 
     fs::write(project_path.join("horus.yaml"), content)?;

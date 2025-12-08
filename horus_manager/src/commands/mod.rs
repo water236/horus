@@ -1,6 +1,14 @@
+pub mod clean;
+pub mod doctor;
 pub mod github_auth;
 pub mod init;
+pub mod launch;
+pub mod log;
+pub mod msg;
 pub mod new;
+pub mod node;
+pub mod param;
 pub mod pkg;
 pub mod run;
 pub mod test;
+pub mod topic;

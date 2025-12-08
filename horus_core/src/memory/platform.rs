@@ -46,27 +46,24 @@ pub fn shm_topics_dir() -> PathBuf {
     shm_base_dir().join("topics")
 }
 
-/// Get the topics directory for a specific session
-pub fn shm_session_topics_dir(session_id: &str) -> PathBuf {
-    shm_base_dir()
-        .join("sessions")
-        .join(session_id)
-        .join("topics")
-}
-
 /// Get the heartbeats directory for node health monitoring
 pub fn shm_heartbeats_dir() -> PathBuf {
     shm_base_dir().join("heartbeats")
 }
 
-/// Get the global shared memory directory
-pub fn shm_global_dir() -> PathBuf {
-    shm_base_dir().join("global")
-}
-
 /// Get the network status directory for transport monitoring
 pub fn shm_network_dir() -> PathBuf {
     shm_base_dir().join("network")
+}
+
+/// Get the params directory for cross-process runtime parameters
+///
+/// Parameters stored here can be read/written by multiple processes,
+/// enabling dynamic runtime configuration (e.g., PID tuning).
+///
+/// Structure: `/dev/shm/horus/params/{param_name}` (one file per param)
+pub fn shm_params_dir() -> PathBuf {
+    shm_base_dir().join("params")
 }
 
 /// Get the logs shared memory path
@@ -91,71 +88,6 @@ pub fn shm_logs_path() -> PathBuf {
     {
         PathBuf::from("/tmp/horus_logs")
     }
-}
-
-/// Get session directory for a specific session ID
-pub fn shm_session_dir(session_id: &str) -> PathBuf {
-    shm_base_dir().join("sessions").join(session_id)
-}
-
-/// Write the current process PID to session directory for liveness tracking
-/// This enables dashboards to detect dead sessions instantly (like rqt in ROS)
-/// Supports multi-process sessions by storing PIDs in separate files
-pub fn write_session_pid(session_id: &str) -> std::io::Result<()> {
-    let session_dir = shm_session_dir(session_id);
-    let pids_dir = session_dir.join("pids");
-    std::fs::create_dir_all(&pids_dir)?;
-    // Create a PID file named by our process ID (supports multiple processes per session)
-    let pid_file = pids_dir.join(std::process::id().to_string());
-    std::fs::write(pid_file, "")
-}
-
-/// Read all PIDs from a session directory (supports multi-process sessions)
-pub fn read_session_pids(session_id: &str) -> Vec<u32> {
-    let pids_dir = shm_session_dir(session_id).join("pids");
-    if !pids_dir.exists() {
-        // Legacy: check single pid file
-        let legacy_pid = shm_session_dir(session_id).join("pid");
-        if let Ok(content) = std::fs::read_to_string(legacy_pid) {
-            if let Ok(pid) = content.trim().parse() {
-                return vec![pid];
-            }
-        }
-        return vec![];
-    }
-
-    std::fs::read_dir(pids_dir)
-        .map(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .filter_map(|e| e.file_name().to_str()?.parse().ok())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// Check if a session is still alive by verifying ANY of its PIDs exist
-/// Returns true if at least one PID is running, false if all dead
-pub fn is_session_alive(session_id: &str) -> bool {
-    let pids = read_session_pids(session_id);
-    if pids.is_empty() {
-        return false; // No PIDs = assume dead
-    }
-
-    // Session is alive if ANY process is still running
-    let alive = pids.iter().any(|&pid| is_process_running(pid));
-
-    // Clean up dead PID files while we're checking
-    if alive {
-        let pids_dir = shm_session_dir(session_id).join("pids");
-        for pid in &pids {
-            if !is_process_running(*pid) {
-                let _ = std::fs::remove_file(pids_dir.join(pid.to_string()));
-            }
-        }
-    }
-
-    alive
 }
 
 /// Check if a process with given PID is running
@@ -246,14 +178,8 @@ mod tests {
 
         let heartbeats = shm_heartbeats_dir();
         assert!(heartbeats.starts_with(&base));
-    }
 
-    #[test]
-    fn test_session_paths() {
-        let session_dir = shm_session_dir("test-session");
-        assert!(session_dir.to_string_lossy().contains("test-session"));
-
-        let session_topics = shm_session_topics_dir("test-session");
-        assert!(session_topics.to_string_lossy().contains("topics"));
+        let params = shm_params_dir();
+        assert!(params.starts_with(&base));
     }
 }
