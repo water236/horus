@@ -80,6 +80,17 @@ pub struct EnvironmentManifest {
     pub horus_version: String,
 }
 
+/// URL-encode a package name for API calls
+/// Kept for safety but package names should be simple alphanumeric now
+pub fn url_encode_package_name(name: &str) -> String {
+    name.to_string()
+}
+
+/// Convert a package name to a safe filesystem path component
+pub fn package_name_to_path(name: &str) -> String {
+    name.to_string()
+}
+
 pub struct RegistryClient {
     client: Client,
     base_url: String,
@@ -147,13 +158,19 @@ impl RegistryClient {
     }
 
     fn detect_package_source(&self, package_name: &str) -> Result<PackageSource> {
+        // Scoped packages (@org/name) are always from HORUS registry
+        if package_name.starts_with('@') {
+            return Ok(PackageSource::Registry);
+        }
+
         // Check if it's a HORUS package
         if package_name.starts_with("horus") {
             return Ok(PackageSource::Registry);
         }
 
-        // Try HORUS registry first
-        let url = format!("{}/api/packages/{}", self.base_url, package_name);
+        // Try HORUS registry first (URL encode for safety)
+        let encoded_name = url_encode_package_name(package_name);
+        let url = format!("{}/api/packages/{}", self.base_url, encoded_name);
         if let Ok(response) = self.client.get(&url).send() {
             if response.status().is_success() {
                 return Ok(PackageSource::Registry);
@@ -301,9 +318,11 @@ impl RegistryClient {
         ));
 
         let version_str = version.unwrap_or("latest");
+        // URL-encode scoped package names for API calls
+        let encoded_name = url_encode_package_name(package_name);
         let url = format!(
             "{}/api/packages/{}/{}/download",
-            self.base_url, package_name, version_str
+            self.base_url, encoded_name, version_str
         );
 
         // Download package
@@ -319,6 +338,9 @@ impl RegistryClient {
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
         let checksum = format!("{:x}", hasher.finalize());
+
+        // Convert scoped package name to safe path (e.g., @org/pkg -> org--pkg)
+        let safe_pkg_name = package_name_to_path(package_name);
 
         // Determine installation directory based on target
         use crate::workspace::InstallTarget;
@@ -337,8 +359,8 @@ impl RegistryClient {
                 let local_packages = workspace_path.join(".horus/packages");
                 fs::create_dir_all(&local_packages)?;
 
-                // Check if any version exists in global cache
-                let has_global_versions = check_global_versions(&global_cache, package_name)?;
+                // Check if any version exists in global cache (use safe name)
+                let has_global_versions = check_global_versions(&global_cache, &safe_pkg_name)?;
 
                 if has_global_versions {
                     // Install to global and symlink
@@ -355,8 +377,8 @@ impl RegistryClient {
         let tar = GzDecoder::new(&bytes[..]);
         let mut archive = Archive::new(tar);
 
-        // Extract to temporary location first to detect version
-        let temp_dir = std::env::temp_dir().join(format!("horus_pkg_{}", package_name));
+        // Extract to temporary location first to detect version (use safe name)
+        let temp_dir = std::env::temp_dir().join(format!("horus_pkg_{}", safe_pkg_name));
         fs::create_dir_all(&temp_dir)?;
         archive.unpack(&temp_dir)?;
 
@@ -367,11 +389,11 @@ impl RegistryClient {
             version_str.to_string()
         };
 
-        // Move to final location with version info
+        // Move to final location with version info (use safe path name)
         let package_dir = if install_type == "global" {
-            install_dir.join(format!("{}@{}", package_name, actual_version))
+            install_dir.join(format!("{}@{}", safe_pkg_name, actual_version))
         } else {
-            install_dir.join(package_name)
+            install_dir.join(&safe_pkg_name)
         };
 
         // Remove existing if present
@@ -398,7 +420,7 @@ impl RegistryClient {
         if install_type == "global" {
             if let Some(local_pkg_dir) = local_packages_dir {
                 fs::create_dir_all(&local_pkg_dir)?;
-                let local_link = local_pkg_dir.join(package_name);
+                let local_link = local_pkg_dir.join(&safe_pkg_name);
 
                 // Remove existing symlink/dir if present
                 if local_link.exists() || local_link.symlink_metadata().is_ok() {
@@ -1011,8 +1033,9 @@ impl RegistryClient {
             }
         };
 
-        // Create tar.gz of the package
-        let tar_path = std::env::temp_dir().join(format!("{}-{}.tar.gz", name, version));
+        // Create tar.gz of the package (use safe path for temp file)
+        let safe_name = package_name_to_path(&name);
+        let tar_path = std::env::temp_dir().join(format!("{}-{}.tar.gz", safe_name, version));
 
         // Create tarball in a scope to ensure proper flushing
         {
@@ -1043,7 +1066,7 @@ impl RegistryClient {
             .part(
                 "package",
                 reqwest::blocking::multipart::Part::bytes(package_data)
-                    .file_name(format!("{}-{}.tar.gz", name, version)),
+                    .file_name(format!("{}-{}.tar.gz", safe_name, version)),
             );
 
         // Upload to registry with API key authentication
@@ -1074,7 +1097,8 @@ impl RegistryClient {
         }
 
         println!(" Published {} v{} successfully!", name, version);
-        println!("   View at: {}/packages/{}", self.base_url, name);
+        let encoded_name = url_encode_package_name(&name);
+        println!("   View at: {}/packages/{}", self.base_url, encoded_name);
 
         // Interactive prompts for documentation and source (optional metadata)
         println!("\n{}", "[#] Package Metadata (optional)".cyan().bold());

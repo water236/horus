@@ -28,6 +28,10 @@ pub enum HorusError {
     #[error("Node '{node}' error: {message}")]
     Node { node: String, message: String },
 
+    /// Driver-related errors
+    #[error("Driver error: {0}")]
+    Driver(String),
+
     /// Scheduling errors
     #[error("Scheduling error: {0}")]
     Scheduling(String),
@@ -211,6 +215,11 @@ impl HorusError {
     /// Create a communication error
     pub fn communication<S: Into<String>>(msg: S) -> Self {
         HorusError::Communication(msg.into())
+    }
+
+    /// Create a driver error
+    pub fn driver<S: Into<String>>(msg: S) -> Self {
+        HorusError::Driver(msg.into())
     }
 
     /// Create a memory error

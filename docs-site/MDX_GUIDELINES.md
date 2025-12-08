@@ -148,7 +148,6 @@ If you see "Error loading doc" messages, you likely have an MDX syntax issue.
 
 If you're editing these files, be extra careful:
 - `benchmarks.mdx` - Contains many performance metrics with `<` symbols
-- `rtos-integration.mdx` - Contains latency measurements
 - `troubleshooting-runtime.mdx` - Contains error messages with generic types
 - Any file with tables showing performance data
 

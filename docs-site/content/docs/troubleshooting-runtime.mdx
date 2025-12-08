@@ -12,7 +12,7 @@ This guide helps you diagnose and fix common errors that occur when running HORU
 
 When your HORUS application isn't working:
 
-1. **Check the Dashboard**: Run `horus dashboard` to see active nodes, topics, and message flow
+1. **Check the Monitor**: Run `horus monitor` to see active nodes, topics, and message flow
 2. **Examine Logs**: Look for error messages in your terminal output
 3. **Verify Topics**: Ensure publisher and subscriber use exact same topic names
 4. **Check Shared Memory**: Look in `/dev/shm/` for stale HORUS memory regions
@@ -98,7 +98,7 @@ let hub = Hub::new("sensors.camera")?;
 let hub = Hub::new("robot.cmd_vel")?;
 ```
 
-**Coming from ROS?** ROS uses slashes (`/sensor/lidar`) because it uses network-based naming. HORUS uses dots because topic names map directly to shared memory file names. See [Topic Naming](/core-concepts/core-concepts-hub#use-dots-not-slashes) for details.
+**Coming from ROS?** ROS uses slashes (`/sensor/lidar`) because it uses network-based naming. HORUS uses dots because topic names map directly to shared memory file names. See [Topic Naming](/concepts/core-concepts-hub#use-dots-not-slashes) for details.
 
 ---
 
@@ -126,9 +126,9 @@ let hub = Hub::new("robot.cmd_vel")?;
    let sub_hub: Hub<f32> = Hub::new("sensor_data")?;  // Exact match
    ```
 
-   **Debug with Dashboard**:
+   **Debug with Monitor**:
    ```bash
-   horus dashboard
+   horus monitor
    ```
    Check the "Topics" section to see active topic names.
 
@@ -310,20 +310,20 @@ pub struct MyMessage {
 
 ---
 
-## Using the Dashboard for Debugging
+## Using the Monitor for Debugging
 
-The HORUS dashboard is your best debugging tool. It shows real-time information about your running application.
+The HORUS monitor is your best debugging tool. It shows real-time information about your running application.
 
-### Start the Dashboard
+### Start the Monitor
 
 ```bash
 # In a separate terminal
-horus dashboard
+horus monitor
 ```
 
 Then open your browser to `http://localhost:7777` (or the displayed URL).
 
-### Dashboard Features
+### Monitor Features
 
 **1. Nodes Tab**
 - See all running nodes
@@ -351,7 +351,7 @@ Then open your browser to `http://localhost:7777` (or the displayed URL).
 
 **Problem**: Subscriber not receiving messages
 
-**Dashboard Investigation**:
+**Monitor Investigation**:
 1. Go to Topics tab
 2. Find your topic name - is it there?
    - **Not listed**: Publisher isn't sending (check publisher code)
@@ -508,7 +508,7 @@ If you're still having issues:
 
 ## Next Steps
 
-- Review [Core Concepts - Nodes](/core-concepts/core-concepts-nodes) for node lifecycle details
+- Review [Core Concepts - Nodes](/concepts/core-concepts-nodes) for node lifecycle details
 - Learn about [Testing](/development/testing) to catch errors early
-- Explore [Examples](/basic-examples) for working code patterns
+- Explore [Examples](/rust/examples/basic-examples) for working code patterns
 - Read [Performance](/performance/performance) to optimize your application

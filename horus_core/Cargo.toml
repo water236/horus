@@ -23,6 +23,7 @@ regex = "1.10"
 toml = "0.8"
 bincode = "1.3"
 bytemuck = { version = "1.14", features = ["derive"] }
+bumpalo = { version = "3.14", features = ["collections"] }
 ctrlc = "3.4"
 colored = "2.0"
 tokio = { version = "1.0", features = ["full"] }
@@ -36,6 +37,7 @@ chrono = { version = "0.4", features = ["serde", "std"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 dirs = "5.0"
 lazy_static = "1.4"
+flate2 = "1.0"  # Compression for cloud recording
 
 # Error handling
 thiserror = "1.0"
@@ -76,15 +78,9 @@ required-features = ["cuda"]
 [features]
 default = ["macros"]
 macros = ["horus_macros"]
-rtos = []
 tls = ["rustls", "tokio-rustls", "rustls-pemfile", "rcgen"]
 quic = ["quinn", "rustls", "rcgen"]
 io-uring-net = ["io-uring"]
 ultra-low-latency = ["io-uring-net"]  # Enable io_uring for lowest latency
 network-v2 = []  # Enable all network v2 optimizations
-rt-linux = ["rtos"]
-freertos = ["rtos"]
-zephyr = ["rtos"]
-qnx = ["rtos"]
-bare-metal = ["rtos"]
 cuda = []  # Enable CUDA IPC for cross-process GPU memory sharing

@@ -149,14 +149,9 @@ pub fn publish_imu_system(
             linear_acceleration_covariance: imu_data.linear_acceleration_covariance.clone(),
         };
 
-        // IMU needs its own Hub - for now, log that we would publish
-        // TODO: Add IMU hub to HorusTransport
-        tracing::trace!(
-            "Would publish IMU for {}: orientation={:?}",
-            name.as_str(),
-            imu_msg.orientation
-        );
-        state.record_publish();
+        if transport.publish_imu(imu_msg) {
+            state.record_publish();
+        }
     }
 }
 

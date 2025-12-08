@@ -209,12 +209,47 @@ pub struct HardwareInfo {
 impl HardwareInfo {
     /// Collect current hardware info
     pub fn current() -> Self {
+        let (cpu_model, cpu_freq_mhz) = Self::read_cpu_info();
         Self {
-            cpu_model: "Unknown".to_string(), // Could use sys-info crate
+            cpu_model,
             cpu_cores: num_cpus::get(),
-            cpu_freq_mhz: 0, // Would need sys-info
+            cpu_freq_mhz,
             os: std::env::consts::OS.to_string(),
         }
+    }
+
+    /// Read CPU model and frequency from /proc/cpuinfo (Linux) or return defaults
+    #[cfg(target_os = "linux")]
+    fn read_cpu_info() -> (String, u64) {
+        use std::fs;
+        let mut model = "Unknown".to_string();
+        let mut freq_mhz = 0u64;
+
+        if let Ok(contents) = fs::read_to_string("/proc/cpuinfo") {
+            for line in contents.lines() {
+                if line.starts_with("model name") {
+                    if let Some(value) = line.split(':').nth(1) {
+                        model = value.trim().to_string();
+                    }
+                } else if line.starts_with("cpu MHz") {
+                    if let Some(value) = line.split(':').nth(1) {
+                        if let Ok(mhz) = value.trim().parse::<f64>() {
+                            freq_mhz = mhz as u64;
+                        }
+                    }
+                }
+                // Stop after finding both values
+                if model != "Unknown" && freq_mhz > 0 {
+                    break;
+                }
+            }
+        }
+        (model, freq_mhz)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn read_cpu_info() -> (String, u64) {
+        ("Unknown".to_string(), 0)
     }
 
     /// Check if profiles are portable (same core count)

@@ -307,9 +307,13 @@ pub fn quick_spawn_menu_system(
             ];
 
             for (name, keywords, shape) in items {
+                // Filter check and click handler are intentionally separate:
+                // - First if: controls whether button is rendered
+                // - Second if: handles click event
+                #[allow(clippy::collapsible_if)]
                 if filter.is_empty()
                     || name.to_lowercase().contains(&filter)
-                    || keywords.contains(&filter.as_str())
+                    || keywords.contains(filter.as_str())
                 {
                     if ui.button(name).clicked() {
                         let obj_name = palette_state.next_name(&name.to_lowercase());

@@ -64,9 +64,10 @@ default = ["standard-nodes"]
 standard-nodes = [
     "gilrs",           # JoystickInputNode (needs libudev, installed by install.sh)
     "crossterm",       # KeyboardInputNode (pure Rust)
-    "serial-hardware", # SerialNode, DynamixelNode, RoboclawMotorNode
     "sysinfo",         # System monitoring (pure Rust)
 ]
+# Note: serial-hardware feature removed from defaults - requires hardware serial port drivers
+# Enable with: horus = { features = ["serial-hardware"] }
 
 # Vision nodes - requires OpenCV (heavy dependency, opt-in)
 # Enable with: horus = { features = ["vision"] }

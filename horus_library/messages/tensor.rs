@@ -46,9 +46,10 @@ pub const CUDA_IPC_HANDLE_SIZE: usize = 64;
 ///
 /// Matches common ML framework dtypes for seamless interop.
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TensorDtype {
     /// 32-bit floating point (default for most ML)
+    #[default]
     F32 = 0,
     /// 64-bit floating point
     F64 = 1,
@@ -117,12 +118,6 @@ impl TensorDtype {
     }
 }
 
-impl Default for TensorDtype {
-    fn default() -> Self {
-        TensorDtype::F32
-    }
-}
-
 // Safety: TensorDtype is repr(u8) with valid values 0-12, all bit patterns in that range are valid
 unsafe impl Pod for TensorDtype {}
 unsafe impl Zeroable for TensorDtype {}
@@ -131,9 +126,10 @@ unsafe impl Zeroable for TensorDtype {}
 ///
 /// Supports CPU and up to 4 CUDA GPUs.
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TensorDevice {
     /// CPU memory (accessible via shared memory)
+    #[default]
     Cpu = 0,
     /// CUDA GPU 0
     Cuda0 = 1,
@@ -173,12 +169,6 @@ impl TensorDevice {
             3 => Some(TensorDevice::Cuda3),
             _ => None,
         }
-    }
-}
-
-impl Default for TensorDevice {
-    fn default() -> Self {
-        TensorDevice::Cpu
     }
 }
 

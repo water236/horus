@@ -9,6 +9,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+// Record/Replay imports
+use super::record_replay::{
+    NodeRecorder, NodeReplayer, RecordingConfig, RecordingManager, ReplayMode, ReplayNode,
+    SchedulerRecording,
+};
+
 // Global flag for SIGTERM handling
 static SIGTERM_RECEIVED: AtomicBool = AtomicBool::new(false);
 
@@ -23,9 +29,7 @@ extern "C" fn sigterm_handler(_signum: libc::c_int) {
 }
 
 // Import intelligence modules
-use super::executors::{
-    AsyncIOExecutor, AsyncResult, BackgroundExecutor, IsolatedExecutor, ParallelExecutor,
-};
+use super::executors::{AsyncIOExecutor, AsyncResult, BackgroundExecutor, ParallelExecutor};
 use super::fault_tolerance::CircuitBreaker;
 use super::intelligence::{DependencyGraph, ExecutionTier, RuntimeProfiler, TierClassifier};
 use super::jit::CompiledDataflow;
@@ -47,6 +51,10 @@ struct RegisteredNode {
     deadline: Option<Duration>, // Deadline for RT nodes
     is_jit_compiled: bool, // Track if node uses JIT compilation
     jit_stats: Option<CompiledDataflow>, // JIT compilation statistics
+    // Record/Replay support
+    recorder: Option<NodeRecorder>, // Active recording (None if not recording)
+    #[allow(dead_code)] // Stored for future replay-aware scheduling
+    is_replay_node: bool, // True if this node is replaying recorded data
 }
 
 /// Central orchestrator: holds nodes, drives the tick loop.
@@ -67,7 +75,6 @@ pub struct Scheduler {
     async_result_rx: Option<mpsc::UnboundedReceiver<AsyncResult>>,
     async_result_tx: Option<mpsc::UnboundedSender<AsyncResult>>,
     background_executor: Option<BackgroundExecutor>,
-    isolated_executor: Option<IsolatedExecutor>,
     learning_complete: bool,
 
     // JIT compilation for ultra-fast nodes
@@ -94,6 +101,31 @@ pub struct Scheduler {
 
     // Redundancy manager
     redundancy: Option<super::redundancy::RedundancyManager>,
+
+    // === Deterministic topology tracking ===
+    // Whether topology is locked (no more nodes can be added)
+    #[allow(dead_code)] // Reserved for future deterministic mode
+    topology_locked: bool,
+
+    // Collected topology from all nodes (for validation)
+    #[allow(dead_code)] // Reserved for future deterministic mode
+    collected_publishers: Vec<(String, String, String)>, // (node_name, topic, type)
+    #[allow(dead_code)] // Reserved for future deterministic mode
+    collected_subscribers: Vec<(String, String, String)>, // (node_name, topic, type)
+
+    // === Record/Replay System ===
+    // Recording configuration (None = recording disabled)
+    recording_config: Option<RecordingConfig>,
+    // Scheduler-level recording (tracks all nodes)
+    scheduler_recording: Option<SchedulerRecording>,
+    // Replay mode (None = live execution)
+    replay_mode: Option<ReplayMode>,
+    // Replay nodes loaded from recordings
+    replay_nodes: HashMap<String, NodeReplayer>,
+    // Value overrides for what-if testing during replay
+    replay_overrides: HashMap<String, HashMap<String, Vec<u8>>>,
+    // Current tick number for recording/replay
+    current_tick: u64,
 }
 
 impl Default for Scheduler {
@@ -133,7 +165,6 @@ impl Scheduler {
             async_result_rx: None,
             async_result_tx: None,
             background_executor: None,
-            isolated_executor: None,
             learning_complete: true, // CHANGED: Default to deterministic (no learning)
 
             // JIT compilation
@@ -151,6 +182,19 @@ impl Scheduler {
             blackbox: None,
             telemetry: None,
             redundancy: None,
+
+            // Deterministic topology tracking
+            topology_locked: false,
+            collected_publishers: Vec::new(),
+            collected_subscribers: Vec::new(),
+
+            // Record/Replay system (disabled by default)
+            recording_config: None,
+            scheduler_recording: None,
+            replay_mode: None,
+            replay_nodes: HashMap::new(),
+            replay_overrides: HashMap::new(),
+            current_tick: 0,
         }
     }
 
@@ -243,6 +287,468 @@ impl Scheduler {
     pub fn with_name(mut self, name: &str) -> Self {
         self.scheduler_name = name.to_string();
         self
+    }
+
+    // ============================================================================
+    // Record/Replay System
+    // ============================================================================
+
+    /// Enable recording for this scheduler session (builder pattern).
+    ///
+    /// When enabled, all node inputs/outputs are recorded to disk for later replay.
+    /// Recordings are saved to `~/.horus/recordings/<session_name>/`.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use horus_core::Scheduler;
+    /// let scheduler = Scheduler::new()
+    ///     .enable_recording("crash_investigation");  // One line!
+    /// ```
+    pub fn enable_recording(mut self, session_name: &str) -> Self {
+        let config = RecordingConfig::with_name(session_name);
+        // Generate unique scheduler ID from timestamp and process ID
+        let scheduler_id = format!(
+            "{:x}{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0),
+            std::process::id() as u64
+        );
+
+        self.scheduler_recording = Some(SchedulerRecording::new(&scheduler_id, session_name));
+        self.recording_config = Some(config);
+
+        println!(
+            "{}",
+            format!(
+                "[RECORDING] Enabled for session '{}' (scheduler@{})",
+                session_name, scheduler_id
+            )
+            .green()
+        );
+        self
+    }
+
+    /// Enable recording with custom configuration.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use horus_core::Scheduler;
+    /// use horus_core::scheduling::RecordingConfig;
+    ///
+    /// let config = RecordingConfig {
+    ///     session_name: "my_session".to_string(),
+    ///     compress: true,
+    ///     interval: 1,  // Record every tick
+    ///     ..Default::default()
+    /// };
+    /// let scheduler = Scheduler::new()
+    ///     .enable_recording_with_config(config);
+    /// ```
+    pub fn enable_recording_with_config(mut self, config: RecordingConfig) -> Self {
+        // Generate unique scheduler ID from timestamp and process ID
+        let scheduler_id = format!(
+            "{:x}{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0),
+            std::process::id() as u64
+        );
+        let session_name = config.session_name.clone();
+
+        self.scheduler_recording = Some(SchedulerRecording::new(&scheduler_id, &session_name));
+        self.recording_config = Some(config);
+
+        println!(
+            "{}",
+            format!(
+                "[RECORDING] Enabled with custom config for session '{}'",
+                session_name
+            )
+            .green()
+        );
+        self
+    }
+
+    /// Add a replay node from a recording file.
+    ///
+    /// The replay node will output exactly what was recorded, allowing
+    /// mix-and-match debugging with live nodes.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use horus_core::Scheduler;
+    /// use std::path::PathBuf;
+    ///
+    /// let mut scheduler = Scheduler::new();
+    /// scheduler.add(Box::new(live_sensor), 0, None);  // Live node
+    /// scheduler.add_replay(
+    ///     PathBuf::from("~/.horus/recordings/crash/motor_node@abc123.horus"),
+    ///     1,  // priority
+    /// ).expect("Failed to load recording");
+    /// ```
+    pub fn add_replay(&mut self, recording_path: PathBuf, priority: u32) -> HorusResult<&mut Self> {
+        let replayer = NodeReplayer::load(&recording_path).map_err(|e| {
+            crate::error::HorusError::Internal(format!("Failed to load recording: {}", e))
+        })?;
+
+        let node_name = replayer.recording().node_name.clone();
+        let node_id = replayer.recording().node_id.clone();
+
+        println!(
+            "{}",
+            format!(
+                "[REPLAY] Loading '{}' from recording (ticks {}-{})",
+                node_name,
+                replayer.recording().first_tick,
+                replayer.recording().last_tick
+            )
+            .cyan()
+        );
+
+        // Create a ReplayNode wrapper
+        let replay_node = ReplayNode::new(node_name.clone(), node_id.clone());
+
+        // Store the replayer
+        self.replay_nodes.insert(node_name.clone(), replayer);
+
+        // Add as a registered node with replay flag
+        self.nodes.push(RegisteredNode {
+            node: Box::new(replay_node),
+            priority,
+            logging_enabled: true,
+            initialized: false,
+            context: None,
+            rate_hz: None,
+            last_tick: None,
+            circuit_breaker: CircuitBreaker::new(5, 3, 30000), // 5 failures, 3 success, 30s timeout
+            is_rt_node: false,
+            wcet_budget: None,
+            deadline: None,
+            is_jit_compiled: false,
+            jit_stats: None,
+            recorder: None,
+            is_replay_node: true,
+        });
+
+        // Sort nodes by priority
+        self.nodes.sort_by_key(|n| n.priority);
+
+        Ok(self)
+    }
+
+    /// Replay an entire scheduler recording.
+    ///
+    /// All nodes from the recording will be loaded and replayed.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use horus_core::Scheduler;
+    /// use std::path::PathBuf;
+    ///
+    /// let mut scheduler = Scheduler::replay_from(
+    ///     PathBuf::from("~/.horus/recordings/crash/scheduler@abc123.horus")
+    /// ).expect("Failed to load scheduler recording");
+    /// scheduler.run();
+    /// ```
+    pub fn replay_from(scheduler_path: PathBuf) -> HorusResult<Self> {
+        let scheduler_recording = SchedulerRecording::load(&scheduler_path).map_err(|e| {
+            crate::error::HorusError::Internal(format!("Failed to load scheduler recording: {}", e))
+        })?;
+
+        let session_dir = scheduler_path.parent().unwrap_or(&scheduler_path);
+        let mut scheduler =
+            Self::new().with_name(&format!("Replay({})", scheduler_recording.session_name));
+
+        scheduler.replay_mode = Some(ReplayMode::Full {
+            scheduler_path: scheduler_path.clone(),
+        });
+
+        println!(
+            "{}",
+            format!(
+                "[REPLAY] Loading scheduler recording with {} nodes, {} ticks",
+                scheduler_recording.node_recordings.len(),
+                scheduler_recording.total_ticks
+            )
+            .cyan()
+        );
+
+        // Load all node recordings
+        for (node_id, relative_path) in &scheduler_recording.node_recordings {
+            let node_path = session_dir.join(relative_path);
+            if node_path.exists() {
+                if let Err(e) = scheduler.add_replay(node_path, 0) {
+                    eprintln!("Warning: Failed to load node '{}': {}", node_id, e);
+                }
+            }
+        }
+
+        Ok(scheduler)
+    }
+
+    /// Set replay to start at a specific tick (time travel).
+    ///
+    /// # Example
+    /// ```no_run
+    /// use horus_core::Scheduler;
+    /// use std::path::PathBuf;
+    ///
+    /// let mut scheduler = Scheduler::replay_from(
+    ///     PathBuf::from("~/.horus/recordings/crash/scheduler@abc123.horus")
+    /// ).expect("Failed to load")
+    ///     .start_at_tick(1500);  // Jump to tick 1500
+    /// ```
+    pub fn start_at_tick(mut self, tick: u64) -> Self {
+        self.current_tick = tick;
+
+        // Seek all replayers to this tick
+        for replayer in self.replay_nodes.values_mut() {
+            replayer.seek(tick);
+        }
+
+        println!("{}", format!("[REPLAY] Starting at tick {}", tick).cyan());
+        self
+    }
+
+    /// Set an override value for what-if testing during replay.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use horus_core::Scheduler;
+    /// use std::path::PathBuf;
+    ///
+    /// let mut scheduler = Scheduler::replay_from(
+    ///     PathBuf::from("~/.horus/recordings/crash/scheduler@abc123.horus")
+    /// ).expect("Failed to load")
+    ///     .with_override("sensor_node", "temperature", vec![0, 0, 200, 65]); // Override temp=25.0
+    /// ```
+    pub fn with_override(mut self, node_name: &str, output_name: &str, value: Vec<u8>) -> Self {
+        self.replay_overrides
+            .entry(node_name.to_string())
+            .or_default()
+            .insert(output_name.to_string(), value);
+
+        println!(
+            "{}",
+            format!("[REPLAY] Override set: {}.{}", node_name, output_name).yellow()
+        );
+        self
+    }
+
+    /// Check if recording is enabled.
+    pub fn is_recording(&self) -> bool {
+        self.recording_config.is_some()
+    }
+
+    /// Check if in replay mode.
+    pub fn is_replaying(&self) -> bool {
+        self.replay_mode.is_some()
+    }
+
+    /// Get the current tick number.
+    pub fn current_tick(&self) -> u64 {
+        self.current_tick
+    }
+
+    /// Stop recording and save all data to disk.
+    ///
+    /// Call this before shutting down to ensure recordings are saved.
+    pub fn stop_recording(&mut self) -> HorusResult<Vec<PathBuf>> {
+        let mut saved_paths = Vec::new();
+
+        if let Some(ref config) = self.recording_config {
+            // Save all node recordings
+            for registered in self.nodes.iter_mut() {
+                if let Some(ref mut recorder) = registered.recorder {
+                    match recorder.finish() {
+                        Ok(path) => {
+                            println!(
+                                "{}",
+                                format!("[RECORDING] Saved: {}", path.display()).green()
+                            );
+                            saved_paths.push(path);
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "Failed to save recording for '{}': {}",
+                                registered.node.name(),
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Save scheduler recording
+            if let Some(ref mut scheduler_rec) = self.scheduler_recording {
+                scheduler_rec.finish();
+                let path = config.scheduler_path(&scheduler_rec.scheduler_id);
+                if let Err(e) = scheduler_rec.save(&path) {
+                    eprintln!("Failed to save scheduler recording: {}", e);
+                } else {
+                    println!(
+                        "{}",
+                        format!("[RECORDING] Saved scheduler: {}", path.display()).green()
+                    );
+                    saved_paths.push(path);
+                }
+            }
+        }
+
+        self.recording_config = None;
+        Ok(saved_paths)
+    }
+
+    /// List all available recording sessions.
+    pub fn list_recordings() -> HorusResult<Vec<String>> {
+        let manager = RecordingManager::new();
+        manager.list_sessions().map_err(|e| {
+            crate::error::HorusError::Internal(format!("Failed to list recordings: {}", e))
+        })
+    }
+
+    /// Delete a recording session.
+    pub fn delete_recording(session_name: &str) -> HorusResult<()> {
+        let manager = RecordingManager::new();
+        manager.delete_session(session_name).map_err(|e| {
+            crate::error::HorusError::Internal(format!("Failed to delete recording: {}", e))
+        })
+    }
+
+    // ============================================================================
+    // Deterministic Topology Validation (copper-rs level guarantees)
+    // ============================================================================
+
+    /// Validate the system topology before running.
+    ///
+    /// This checks that:
+    /// - All topics have at least one publisher and one subscriber
+    /// - Type names match between publishers and subscribers
+    /// - No orphaned topics exist
+    ///
+    /// Returns a list of topology errors if validation fails.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let errors = scheduler.validate_topology();
+    /// if !errors.is_empty() {
+    ///     for err in &errors {
+    ///         eprintln!("Topology error: {}", err);
+    ///     }
+    ///     panic!("Topology validation failed");
+    /// }
+    /// ```
+    pub fn validate_topology(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+
+        // Check if deterministic mode requires complete connections
+        let require_complete = self
+            .config
+            .as_ref()
+            .and_then(|c| c.deterministic.as_ref())
+            .map(|d| d.require_complete_connections)
+            .unwrap_or(false);
+
+        // Build topic maps
+        let mut publisher_topics: std::collections::HashMap<String, Vec<(String, String)>> =
+            std::collections::HashMap::new();
+        let mut subscriber_topics: std::collections::HashMap<String, Vec<(String, String)>> =
+            std::collections::HashMap::new();
+
+        for (node_name, topic, type_name) in &self.collected_publishers {
+            publisher_topics
+                .entry(topic.clone())
+                .or_default()
+                .push((node_name.clone(), type_name.clone()));
+        }
+
+        for (node_name, topic, type_name) in &self.collected_subscribers {
+            subscriber_topics
+                .entry(topic.clone())
+                .or_default()
+                .push((node_name.clone(), type_name.clone()));
+        }
+
+        // Check for orphaned publishers (no subscribers)
+        if require_complete {
+            for (topic, publishers) in &publisher_topics {
+                if !subscriber_topics.contains_key(topic) {
+                    errors.push(format!(
+                        "Topic '{}' has publishers {:?} but no subscribers",
+                        topic,
+                        publishers.iter().map(|(n, _)| n).collect::<Vec<_>>()
+                    ));
+                }
+            }
+
+            // Check for orphaned subscribers (no publishers)
+            for (topic, subscribers) in &subscriber_topics {
+                if !publisher_topics.contains_key(topic) {
+                    errors.push(format!(
+                        "Topic '{}' has subscribers {:?} but no publishers",
+                        topic,
+                        subscribers.iter().map(|(n, _)| n).collect::<Vec<_>>()
+                    ));
+                }
+            }
+        }
+
+        // Check for type mismatches
+        for (topic, subscribers) in &subscriber_topics {
+            if let Some(publishers) = publisher_topics.get(topic) {
+                for (sub_node, sub_type) in subscribers {
+                    for (pub_node, pub_type) in publishers {
+                        if sub_type != pub_type {
+                            errors.push(format!(
+                                "Type mismatch on topic '{}': publisher '{}' sends '{}', subscriber '{}' expects '{}'",
+                                topic, pub_node, pub_type, sub_node, sub_type
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        errors
+    }
+
+    /// Lock the topology, preventing further node additions.
+    ///
+    /// After calling this, any attempt to add nodes will panic in strict
+    /// deterministic mode. This ensures the execution plan is fixed.
+    ///
+    /// # Example
+    /// ```ignore
+    /// scheduler.add(Box::new(node1), 0, None);
+    /// scheduler.add(Box::new(node2), 1, None);
+    /// scheduler.lock_topology();  // No more nodes can be added
+    /// scheduler.run();
+    /// ```
+    pub fn lock_topology(&mut self) -> &mut Self {
+        self.topology_locked = true;
+        println!(
+            "[DETERMINISTIC] Topology locked with {} publishers, {} subscribers",
+            self.collected_publishers.len(),
+            self.collected_subscribers.len()
+        );
+        self
+    }
+
+    /// Get the collected topology for inspection.
+    ///
+    /// Returns (publishers, subscribers) where each is a list of
+    /// (node_name, topic_name, type_name) tuples.
+    #[allow(clippy::type_complexity)]
+    pub fn get_topology(&self) -> (&[(String, String, String)], &[(String, String, String)]) {
+        (&self.collected_publishers, &self.collected_subscribers)
+    }
+
+    /// Check if topology is currently locked.
+    pub fn is_topology_locked(&self) -> bool {
+        self.topology_locked
     }
 
     // ============================================================================
@@ -640,8 +1146,38 @@ impl Scheduler {
         priority: u32,
         logging_enabled: Option<bool>,
     ) -> &mut Self {
+        // Check if topology is locked (deterministic mode)
+        if self.topology_locked {
+            if let Some(ref config) = self.config {
+                if let Some(ref det_config) = config.deterministic {
+                    if det_config.freeze_topology_after_start {
+                        panic!(
+                            "Cannot add node '{}': topology is locked in deterministic mode",
+                            node.name()
+                        );
+                    }
+                }
+            }
+        }
+
         let node_name = node.name().to_string();
         let logging_enabled = logging_enabled.unwrap_or(false);
+
+        // Collect topology from node (for deterministic validation)
+        for pub_meta in node.get_publishers() {
+            self.collected_publishers.push((
+                node_name.clone(),
+                pub_meta.topic_name,
+                pub_meta.type_name,
+            ));
+        }
+        for sub_meta in node.get_subscribers() {
+            self.collected_subscribers.push((
+                node_name.clone(),
+                sub_meta.topic_name,
+                sub_meta.type_name,
+            ));
+        }
 
         // Check if this node supports JIT compilation using trait methods
         let is_jit_capable = node.supports_jit();
@@ -730,6 +1266,30 @@ impl Scheduler {
             );
         }
 
+        // Create node recorder if recording is enabled
+        let recorder = if let Some(ref config) = self.recording_config {
+            // Generate unique node ID from timestamp and node index
+            let node_id = format!(
+                "{:x}{:x}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos() as u64)
+                    .unwrap_or(0),
+                self.nodes.len() as u64
+            );
+            let recorder = NodeRecorder::new(&node_name, &node_id, config.clone());
+
+            // Register with scheduler recording
+            if let Some(ref mut scheduler_rec) = self.scheduler_recording {
+                let relative_path = format!("{}@{}.horus", node_name, node_id);
+                scheduler_rec.add_node_recording(&node_id, &relative_path);
+            }
+
+            Some(recorder)
+        } else {
+            None
+        };
+
         self.nodes.push(RegisteredNode {
             node,
             priority,
@@ -744,6 +1304,8 @@ impl Scheduler {
             deadline,
             is_jit_compiled,
             jit_stats: jit_compiled, // JIT-compiled dataflow (if available)
+            recorder,                // Node recorder (if recording enabled)
+            is_replay_node: false,   // Live node, not replay
         });
 
         println!(
@@ -797,6 +1359,8 @@ impl Scheduler {
             deadline: Some(deadline),
             is_jit_compiled: false, // RT nodes typically don't use JIT
             jit_stats: None,
+            recorder: None,
+            is_replay_node: false,
         });
 
         println!(
@@ -1057,9 +1621,6 @@ impl Scheduler {
                     // Setup background executor for low-priority nodes
                     self.setup_background_executor();
 
-                    // Setup isolated executor for fault-tolerant nodes
-                    self.setup_isolated_executor();
-
                     self.learning_complete = true;
                     println!("{}", "=== Optimization Complete ===\n".green());
                 }
@@ -1273,12 +1834,6 @@ impl Scheduler {
             if let Some(ref mut executor) = self.background_executor {
                 executor.shutdown();
                 println!("Background executor shutdown complete");
-            }
-
-            // Shutdown isolated executor
-            if let Some(ref mut executor) = self.isolated_executor {
-                executor.shutdown();
-                println!("Isolated executor shutdown complete");
             }
 
             // Get total tick count from profiler stats
@@ -1798,12 +2353,6 @@ impl Scheduler {
             executor.tick_all();
         }
 
-        // Trigger isolated nodes (process-isolated, fault-tolerant)
-        if let Some(ref mut executor) = self.isolated_executor {
-            let _results = executor.tick_all();
-            // Results are handled by the executor itself (restart on failure, etc.)
-        }
-
         // Execute nodes level by level (nodes in same level can run in parallel)
         let levels = self
             .dependency_graph
@@ -2294,53 +2843,6 @@ impl Scheduler {
         self.background_executor = Some(bg_executor);
     }
 
-    /// Setup isolated executor and register isolated-tier nodes
-    fn setup_isolated_executor(&mut self) {
-        // Create isolated executor
-        let mut iso_executor = match IsolatedExecutor::new() {
-            Ok(exec) => exec,
-            Err(e) => {
-                eprintln!("[Isolated] Failed to create executor: {}", e);
-                return;
-            }
-        };
-
-        // Identify isolated nodes from classifier
-        if let Some(ref classifier) = self.classifier {
-            let mut nodes_to_isolate = Vec::new();
-
-            // Find names of isolated nodes
-            for registered in self.nodes.iter() {
-                let node_name = registered.node.name();
-
-                // Check if this node is classified as Isolated tier
-                if let Some(tier) = classifier.get_tier(node_name) {
-                    if tier == ExecutionTier::Isolated {
-                        nodes_to_isolate.push(node_name.to_string());
-                    }
-                }
-            }
-
-            // Register nodes for isolated execution
-            // Note: Isolated nodes stay in main scheduler but are marked for
-            // process-isolated execution via the circuit breaker
-            for node_name in &nodes_to_isolate {
-                if let Err(e) = iso_executor.register_node(node_name) {
-                    eprintln!("Failed to register {} for isolation: {}", node_name, e);
-                }
-            }
-
-            if iso_executor.node_count() > 0 {
-                println!(
-                    "[Isolated] Registered {} nodes for process isolation",
-                    iso_executor.node_count()
-                );
-            }
-        }
-
-        self.isolated_executor = Some(iso_executor);
-    }
-
     /// Process background executor results (non-blocking)
     fn process_background_results(&mut self) {
         if let Some(ref executor) = self.background_executor {
@@ -2485,75 +2987,35 @@ impl Scheduler {
             println!("Profiling disabled");
         }
 
-        // Handle robot presets with preset-specific optimizations
+        // Handle robot presets
         match config.preset {
             RobotPreset::SafetyCritical => {
-                // Additional safety-critical setup
                 println!("Configured for safety-critical operation");
-                println!("- Deterministic execution enabled");
-                println!("- Triple redundancy active");
-                println!("- Black box recording enabled");
             }
             RobotPreset::HardRealTime => {
                 println!("Configured for hard real-time operation");
-                println!("- JIT compilation enabled");
-                println!("- CPU cores isolated");
             }
             RobotPreset::HighPerformance => {
                 println!("Configured for high-performance operation");
-                println!("- Maximum optimization enabled");
-                println!("- All GPUs active");
             }
             RobotPreset::Space => {
                 println!("Configured for space robotics");
-                println!("- Radiation hardening active");
-                println!("- Power management enabled");
-
-                // Apply space-specific settings from custom config
-                if let Some(delay) = config.get_custom::<i64>("communication_delay_ms") {
-                    println!("- Communication delay: {}ms", delay);
-                }
             }
             RobotPreset::Swarm => {
                 println!("Configured for swarm robotics");
-
                 // Apply swarm-specific settings
                 if let Some(swarm_id) = config.get_custom::<i64>("swarm_id") {
                     self.scheduler_name = format!("Swarm_{}", swarm_id);
                 }
-                if let Some(consensus) = config.get_custom::<String>("consensus_algorithm") {
-                    println!("- Consensus algorithm: {}", consensus);
-                }
             }
             RobotPreset::SoftRobotics => {
                 println!("Configured for soft robotics");
-
-                // Apply soft robotics settings
-                if let Some(material) = config.get_custom::<String>("material_model") {
-                    println!("- Material model: {}", material);
-                }
-            }
-            RobotPreset::Quantum => {
-                println!("Configured for quantum-assisted robotics");
-
-                // Apply quantum settings
-                if let Some(backend) = config.get_custom::<String>("quantum_backend") {
-                    println!("- Quantum backend: {}", backend);
-                }
-                if let Some(qubits) = config.get_custom::<i64>("qubit_count") {
-                    println!("- Qubit count: {}", qubits);
-                }
             }
             RobotPreset::Custom => {
                 println!("Using custom configuration");
-
-                // Process all custom settings
-                for key in config.custom.keys() {
-                    println!("- Custom setting: {}", key);
-                }
             }
             _ => {
-                // Standard or other presets
+                // Standard preset
             }
         }
 
@@ -2651,6 +3113,56 @@ impl Scheduler {
                         numa_nodes
                     );
                 }
+            }
+        }
+
+        // 7. Recording configuration for record/replay system
+        if let Some(ref recording_yaml) = config.recording {
+            if recording_yaml.enabled {
+                // Generate session name if not provided
+                let session_name = recording_yaml.session_name.clone().unwrap_or_else(|| {
+                    use std::time::{SystemTime, UNIX_EPOCH};
+                    let timestamp = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    format!("session_{}", timestamp)
+                });
+
+                // Convert YAML config to internal RecordingConfig
+                let mut recording_config = RecordingConfig::new(session_name.clone());
+                recording_config.compress = recording_yaml.compress;
+                recording_config.interval = recording_yaml.interval as u64;
+
+                if let Some(ref output_dir) = recording_yaml.output_dir {
+                    recording_config.base_dir = PathBuf::from(output_dir);
+                }
+
+                // Store include/exclude filters in the config
+                recording_config.include_nodes = recording_yaml.include_nodes.clone();
+                recording_config.exclude_nodes = recording_yaml.exclude_nodes.clone();
+
+                // Enable recording
+                self.recording_config = Some(recording_config.clone());
+
+                // Generate unique scheduler ID
+                let scheduler_id = format!(
+                    "{:x}{:x}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos() as u64)
+                        .unwrap_or(0),
+                    std::process::id() as u64
+                );
+
+                // Create scheduler-level recording
+                self.scheduler_recording =
+                    Some(SchedulerRecording::new(&scheduler_id, &session_name));
+
+                println!(
+                    "[SCHEDULER] Recording enabled (session: {}, compress: {})",
+                    session_name, recording_yaml.compress
+                );
             }
         }
 

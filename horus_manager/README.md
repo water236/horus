@@ -91,29 +91,29 @@ horus run main.rs -- arg1 arg2
 - `-c, --clean` - Clean build cache before building
 - Trailing args passed to program
 
-### 3. `horus dashboard` - Monitoring Dashboard
+### 3. `horus monitor` - System Monitor
 
-Launch real-time monitoring dashboard (web, GUI, or terminal UI).
+Launch real-time monitoring interface (web or terminal UI).
 
 ```bash
-# Web dashboard on port 3000 (auto-opens browser)
-horus dashboard
+# Web interface on port 3000 (auto-opens browser)
+horus monitor
 
 # Custom port
-horus dashboard 3001
-horus dashboard 8080
+horus monitor 3001
+horus monitor 8080
 
 # Terminal UI mode (for SSH sessions)
-horus dashboard -t
-horus dashboard --tui
+horus monitor -t
+horus monitor --tui
 ```
 
 **Modes:**
-- Default: Web dashboard (Axum on port 3000, auto-opens browser)
-- `<PORT>`: Custom port for web dashboard
+- Default: Web interface (Axum on port 3000, auto-opens browser)
+- `<PORT>`: Custom port for web interface
 - `-t, --tui`: Terminal UI mode
 
-**Dashboard Features:**
+**Monitor Features:**
 - Real-time process monitoring
 - Topic-based message flow visualization
 - Performance metrics and latency tracking
@@ -373,11 +373,11 @@ horus env restore production.yaml
 ### Monitor Running System
 
 ```bash
-# Launch web dashboard
-horus dashboard
+# Launch web monitor
+horus monitor
 
 # Terminal UI for SSH
-horus dashboard -t
+horus monitor -t
 ```
 
 ## Implementation Details
@@ -420,7 +420,7 @@ horus pkg --help
 horus env --help
 horus publish --help
 horus auth --help
-horus dashboard --help
+horus monitor --help
 
 # General help
 horus --help

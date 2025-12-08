@@ -1,7 +1,7 @@
-//! Monitoring System - Heartbeat integration for dashboard visibility
+//! Monitoring System - Heartbeat integration for monitor visibility
 //!
-//! This module provides HORUS dashboard integration for sim3d, allowing the
-//! simulator to be visible in monitoring tools like `horus monitor` and `horus dashboard`.
+//! This module provides HORUS monitor integration for sim3d, allowing the
+//! simulator to be visible in monitoring tools like `horus monitor`.
 
 use bevy::prelude::*;
 use horus_core::memory::platform::shm_heartbeats_dir;

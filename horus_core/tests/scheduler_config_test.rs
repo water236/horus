@@ -188,13 +188,13 @@ fn test_soft_robotics_config() {
 }
 
 #[test]
-fn test_quantum_config() {
-    // Apply quantum-assisted robotics configuration
-    let mut scheduler = Scheduler::new().with_config(SchedulerConfig::quantum());
+fn test_high_performance_optimizer_nodes() {
+    // Test high-performance configuration with optimizer nodes
+    let mut scheduler = Scheduler::new().with_config(SchedulerConfig::high_performance());
 
     scheduler
-        .add(Box::new(TestNode::new("quantum_sensor")), 0, Some(true))
-        .add(Box::new(TestNode::new("quantum_optimizer")), 1, Some(true));
+        .add(Box::new(TestNode::new("perf_sensor")), 0, Some(true))
+        .add(Box::new(TestNode::new("perf_optimizer")), 1, Some(true));
 
     let result = scheduler.run_for(std::time::Duration::from_millis(100));
     assert!(result.is_ok());

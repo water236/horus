@@ -264,65 +264,6 @@ fn is_executable(path: &Path) -> bool {
     path.exists()
 }
 
-/// Scan for unregistered plugins in bin directories - reserved for future use
-#[allow(dead_code)]
-pub fn scan_unregistered_plugins(resolver: &PluginResolver) -> Vec<UnregisteredPlugin> {
-    let mut unregistered = Vec::new();
-    let registered_commands: Vec<_> = resolver.all_commands();
-
-    // Scan global bin
-    if let Ok(global_bin) = PluginRegistry::global_bin_dir() {
-        if let Ok(entries) = std::fs::read_dir(&global_bin) {
-            for entry in entries.flatten() {
-                if let Some(name) = entry.file_name().to_str() {
-                    if name.starts_with("horus-") {
-                        let command = name.strip_prefix("horus-").unwrap().to_string();
-                        if !registered_commands.contains(&command) && is_executable(&entry.path()) {
-                            unregistered.push(UnregisteredPlugin {
-                                command,
-                                binary: entry.path(),
-                                scope: "global".to_string(),
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Scan project bin
-    if let Some(root) = resolver.project_root() {
-        let project_bin = PluginRegistry::project_bin_dir(root);
-        if let Ok(entries) = std::fs::read_dir(&project_bin) {
-            for entry in entries.flatten() {
-                if let Some(name) = entry.file_name().to_str() {
-                    if name.starts_with("horus-") {
-                        let command = name.strip_prefix("horus-").unwrap().to_string();
-                        if !registered_commands.contains(&command) && is_executable(&entry.path()) {
-                            unregistered.push(UnregisteredPlugin {
-                                command,
-                                binary: entry.path(),
-                                scope: "project".to_string(),
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    unregistered
-}
-
-/// An unregistered plugin found in bin directories - reserved for future use
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct UnregisteredPlugin {
-    pub command: String,
-    pub binary: PathBuf,
-    pub scope: String,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

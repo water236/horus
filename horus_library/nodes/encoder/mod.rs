@@ -1,9 +1,15 @@
+//! Encoder Node - Wheel/joint position feedback for odometry and control
+//!
+//! This node reads encoder data from wheels or joints and publishes Odometry messages.
+//! It uses the driver abstraction layer to support multiple hardware backends.
+
 use crate::Odometry;
+use horus_core::driver::{Driver, Sensor};
 use horus_core::error::HorusResult;
 
 // Type alias for cleaner signatures
 type Result<T> = HorusResult<T>;
-use horus_core::{Hub, Node, NodeInfo, NodeInfoExt};
+use horus_core::{Hub, Node, NodeInfo};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // Processor imports for hybrid pattern
@@ -11,14 +17,32 @@ use crate::nodes::processor::{
     ClosureProcessor, FilterProcessor, PassThrough, Pipeline, Processor,
 };
 
-#[cfg(feature = "gpio-hardware")]
-use sysfs_gpio::{Direction, Edge, Pin};
+// Import driver types
+use crate::drivers::encoder::{EncoderDriver, EncoderDriverBackend, SimulationEncoderDriver};
 
-/// Encoder backend type
+#[cfg(feature = "gpio-hardware")]
+use crate::drivers::encoder::GpioEncoderDriver;
+
+/// Encoder backend type (deprecated - use EncoderDriverBackend instead)
+///
+/// This enum is kept for backward compatibility. New code should use
+/// `EncoderDriverBackend` from `crate::drivers::encoder`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EncoderBackend {
     Simulation,
     GpioQuadrature,
+}
+
+impl From<EncoderBackend> for EncoderDriverBackend {
+    fn from(backend: EncoderBackend) -> Self {
+        match backend {
+            EncoderBackend::Simulation => EncoderDriverBackend::Simulation,
+            #[cfg(feature = "gpio-hardware")]
+            EncoderBackend::GpioQuadrature => EncoderDriverBackend::Gpio,
+            #[cfg(not(feature = "gpio-hardware"))]
+            EncoderBackend::GpioQuadrature => EncoderDriverBackend::Simulation, // Fallback
+        }
+    }
 }
 
 /// Encoder Node - Wheel/joint position feedback for odometry and control
@@ -26,365 +50,169 @@ pub enum EncoderBackend {
 /// Reads encoder data from wheels or joints and publishes position, velocity,
 /// and odometry information for robot navigation and control feedback.
 ///
-/// Supported backends:
-/// - GPIO Quadrature (interrupt-based quadrature decoding using sysfs_gpio)
-/// - Simulation mode for testing
+/// # Driver System
 ///
-/// # Hybrid Pattern
+/// This node uses the HORUS driver abstraction layer. Drivers handle all
+/// hardware-specific code, while the node handles HORUS integration (topics,
+/// scheduling, lifecycle).
+///
+/// ## Supported Drivers
+///
+/// - `SimulationEncoderDriver` - Always available, generates synthetic encoder data
+/// - `GpioEncoderDriver` - GPIO quadrature encoder (requires `gpio-hardware` feature)
+///
+/// # Example
 ///
 /// ```rust,ignore
+/// use horus_library::nodes::EncoderNode;
+/// use horus_library::drivers::SimulationEncoderDriver;
+///
+/// // Using the default simulation driver
+/// let node = EncoderNode::new()?;
+///
+/// // Using a specific driver
+/// let driver = SimulationEncoderDriver::new();
+/// let node = EncoderNode::with_driver("odom", driver)?;
+///
+/// // Using the builder for custom configuration
 /// let node = EncoderNode::builder()
+///     .topic("custom_odom")
+///     .with_backend(EncoderBackend::Simulation)
 ///     .with_filter(|odom| {
 ///         // Only publish when moving
 ///         if odom.twist.linear[0].abs() > 0.01 { Some(odom) } else { None }
 ///     })
 ///     .build()?;
 /// ```
-pub struct EncoderNode<P = PassThrough<Odometry>>
+pub struct EncoderNode<D = EncoderDriver, P = PassThrough<Odometry>>
 where
+    D: Sensor<Output = Odometry>,
     P: Processor<Odometry>,
 {
     publisher: Hub<Odometry>,
 
+    // Driver (handles hardware abstraction)
+    driver: D,
+
     // Configuration
     frame_id: String,
     child_frame_id: String,
-    encoder_resolution: f64, // pulses per revolution
-    wheel_radius: f64,       // wheel radius in meters
-    gear_ratio: f64,         // gear ratio
-    backend: EncoderBackend,
-    gpio_pin_a: u64, // GPIO pin for channel A
-    gpio_pin_b: u64, // GPIO pin for channel B
 
     // State
-    last_position: f64, // last encoder position
-    last_time: u64,
-    velocity: f64,
-    total_distance: f64,
-    encoder_count: i64, // Raw encoder count
-
-    // Hardware drivers
-    #[cfg(feature = "gpio-hardware")]
-    pin_a: Option<Pin>,
-
-    #[cfg(feature = "gpio-hardware")]
-    pin_b: Option<Pin>,
-
-    #[cfg(feature = "gpio-hardware")]
-    last_a: bool,
-
-    #[cfg(feature = "gpio-hardware")]
-    last_b: bool,
-
-    // Simulation state
-    sim_velocity: f64,
-    sim_angular_velocity: f64,
+    is_initialized: bool,
+    sample_count: u64,
+    last_sample_time: u64,
 
     // Processor for hybrid pattern
     processor: P,
 }
 
-impl EncoderNode {
+impl EncoderNode<EncoderDriver, PassThrough<Odometry>> {
     /// Create a new encoder node with default topic "odom" in simulation mode
     pub fn new() -> Result<Self> {
         Self::new_with_backend("odom", EncoderBackend::Simulation)
     }
 
-    /// Create a new encoder node with custom topic
+    /// Create a new encoder node with custom topic in simulation mode
     pub fn new_with_topic(topic: &str) -> Result<Self> {
         Self::new_with_backend(topic, EncoderBackend::Simulation)
     }
 
     /// Create a new encoder node with specific backend
     pub fn new_with_backend(topic: &str, backend: EncoderBackend) -> Result<Self> {
+        let driver_backend: EncoderDriverBackend = backend.into();
+        let driver = EncoderDriver::new(driver_backend)?;
+
         Ok(Self {
             publisher: Hub::new(topic)?,
+            driver,
             frame_id: "odom".to_string(),
             child_frame_id: "base_link".to_string(),
-            encoder_resolution: 1024.0, // 1024 pulses per revolution default
-            wheel_radius: 0.1,          // 10cm wheel radius default
-            gear_ratio: 1.0,            // Direct drive default
-            backend,
-            gpio_pin_a: 17, // Default GPIO pins for Raspberry Pi
-            gpio_pin_b: 27,
-            last_position: 0.0,
-            last_time: 0,
-            velocity: 0.0,
-            total_distance: 0.0,
-            encoder_count: 0,
-            #[cfg(feature = "gpio-hardware")]
-            pin_a: None,
-            #[cfg(feature = "gpio-hardware")]
-            pin_b: None,
-            #[cfg(feature = "gpio-hardware")]
-            last_a: false,
-            #[cfg(feature = "gpio-hardware")]
-            last_b: false,
-            sim_velocity: 0.0,
-            sim_angular_velocity: 0.0,
+            is_initialized: false,
+            sample_count: 0,
+            last_sample_time: 0,
             processor: PassThrough::new(),
         })
     }
 
     /// Create a builder for advanced configuration
-    pub fn builder() -> EncoderNodeBuilder<PassThrough<Odometry>> {
+    pub fn builder() -> EncoderNodeBuilder<EncoderDriver, PassThrough<Odometry>> {
         EncoderNodeBuilder::new()
     }
+}
 
-    /// Set encoder backend
-    pub fn set_backend(&mut self, backend: EncoderBackend) {
-        self.backend = backend;
+impl<D> EncoderNode<D, PassThrough<Odometry>>
+where
+    D: Sensor<Output = Odometry>,
+{
+    /// Create a new encoder node with a custom driver
+    ///
+    /// This allows using any driver that implements `Sensor<Output = Odometry>`,
+    /// including custom drivers from the marketplace.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use horus_library::nodes::EncoderNode;
+    /// use horus_library::drivers::SimulationEncoderDriver;
+    ///
+    /// let driver = SimulationEncoderDriver::new();
+    /// let node = EncoderNode::with_driver("odom", driver)?;
+    /// ```
+    pub fn with_driver(topic: &str, driver: D) -> Result<Self> {
+        Ok(Self {
+            publisher: Hub::new(topic)?,
+            driver,
+            frame_id: "odom".to_string(),
+            child_frame_id: "base_link".to_string(),
+            is_initialized: false,
+            sample_count: 0,
+            last_sample_time: 0,
+            processor: PassThrough::new(),
+        })
     }
+}
 
-    /// Set GPIO pins for quadrature encoder (channel A and B)
-    pub fn set_gpio_pins(&mut self, pin_a: u64, pin_b: u64) {
-        self.gpio_pin_a = pin_a;
-        self.gpio_pin_b = pin_b;
-    }
-
-    /// Set encoder configuration parameters
-    pub fn set_encoder_config(&mut self, resolution: f64, wheel_radius: f64, gear_ratio: f64) {
-        self.encoder_resolution = resolution;
-        self.wheel_radius = wheel_radius;
-        self.gear_ratio = gear_ratio;
-    }
-
+impl<D, P> EncoderNode<D, P>
+where
+    D: Sensor<Output = Odometry>,
+    P: Processor<Odometry>,
+{
     /// Set coordinate frame IDs
     pub fn set_frame_ids(&mut self, frame_id: &str, child_frame_id: &str) {
         self.frame_id = frame_id.to_string();
         self.child_frame_id = child_frame_id.to_string();
     }
 
-    /// Get current velocity
-    pub fn get_velocity(&self) -> f64 {
-        self.velocity
+    /// Get the driver's sample rate (if available)
+    pub fn get_sample_rate(&self) -> Option<f32> {
+        self.driver.sample_rate()
     }
 
-    /// Get total distance traveled
-    pub fn get_total_distance(&self) -> f64 {
-        self.total_distance
+    /// Check if the driver is available
+    pub fn is_driver_available(&self) -> bool {
+        self.driver.is_available()
     }
 
-    /// Get raw encoder count
-    pub fn get_encoder_count(&self) -> i64 {
-        self.encoder_count
+    /// Get the driver ID
+    pub fn driver_id(&self) -> &str {
+        self.driver.id()
     }
 
-    /// Reset encoder position and distance
-    pub fn reset(&mut self) {
-        self.last_position = 0.0;
-        self.total_distance = 0.0;
-        self.velocity = 0.0;
-        self.encoder_count = 0;
+    /// Get the driver name
+    pub fn driver_name(&self) -> &str {
+        self.driver.name()
     }
 
-    /// Initialize encoder hardware
-    fn initialize_encoder(&mut self, mut ctx: Option<&mut NodeInfo>) -> bool {
-        match self.backend {
-            EncoderBackend::Simulation => {
-                // Simulation mode requires no hardware initialization
-                true
-            }
-            #[cfg(feature = "gpio-hardware")]
-            EncoderBackend::GpioQuadrature => {
-                ctx.log_info(&format!(
-                    "Initializing GPIO quadrature encoder on pins {} and {}",
-                    self.gpio_pin_a, self.gpio_pin_b
-                ));
-
-                // Initialize pin A
-                let pin_a = Pin::new(self.gpio_pin_a);
-                if let Err(e) = pin_a.export() {
-                    ctx.log_error(&format!(
-                        "Failed to export GPIO pin {}: {:?}",
-                        self.gpio_pin_a, e
-                    ));
-                    ctx.log_warning("Falling back to simulation mode");
-                    self.backend = EncoderBackend::Simulation;
-                    return true;
-                }
-
-                if let Err(e) = pin_a.set_direction(Direction::In) {
-                    ctx.log_error(&format!(
-                        "Failed to set GPIO pin {} direction: {:?}",
-                        self.gpio_pin_a, e
-                    ));
-                    let _ = pin_a.unexport();
-                    ctx.log_warning("Falling back to simulation mode");
-                    self.backend = EncoderBackend::Simulation;
-                    return true;
-                }
-
-                if let Err(e) = pin_a.set_edge(Edge::BothEdges) {
-                    ctx.log_error(&format!(
-                        "Failed to set GPIO pin {} edge: {:?}",
-                        self.gpio_pin_a, e
-                    ));
-                    let _ = pin_a.unexport();
-                    ctx.log_warning("Falling back to simulation mode");
-                    self.backend = EncoderBackend::Simulation;
-                    return true;
-                }
-
-                // Initialize pin B
-                let pin_b = Pin::new(self.gpio_pin_b);
-                if let Err(e) = pin_b.export() {
-                    ctx.log_error(&format!(
-                        "Failed to export GPIO pin {}: {:?}",
-                        self.gpio_pin_b, e
-                    ));
-                    let _ = pin_a.unexport();
-                    ctx.log_warning("Falling back to simulation mode");
-                    self.backend = EncoderBackend::Simulation;
-                    return true;
-                }
-
-                if let Err(e) = pin_b.set_direction(Direction::In) {
-                    ctx.log_error(&format!(
-                        "Failed to set GPIO pin {} direction: {:?}",
-                        self.gpio_pin_b, e
-                    ));
-                    let _ = pin_a.unexport();
-                    let _ = pin_b.unexport();
-                    ctx.log_warning("Falling back to simulation mode");
-                    self.backend = EncoderBackend::Simulation;
-                    return true;
-                }
-
-                // Read initial states
-                self.last_a = pin_a.get_value().unwrap_or(0) != 0;
-                self.last_b = pin_b.get_value().unwrap_or(0) != 0;
-
-                self.pin_a = Some(pin_a);
-                self.pin_b = Some(pin_b);
-
-                ctx.log_info("GPIO quadrature encoder initialized successfully");
-                true
-            }
-            #[cfg(not(feature = "gpio-hardware"))]
-            EncoderBackend::GpioQuadrature => {
-                ctx.log_warning("GPIO backend requested but gpio-hardware feature not enabled");
-                ctx.log_warning("Falling back to simulation mode");
-                self.backend = EncoderBackend::Simulation;
-                true
-            }
-        }
-    }
-
-    fn read_encoder_position(&mut self) -> f64 {
-        match self.backend {
-            EncoderBackend::Simulation => {
-                // For simulation, generate synthetic encoder data
-                let current_time = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as f64
-                    / 1000.0;
-
-                // Simulate encoder position based on synthetic velocity
-                current_time * self.sim_velocity
-            }
-            #[cfg(feature = "gpio-hardware")]
-            EncoderBackend::GpioQuadrature => {
-                // Read current pin states
-                if let (Some(ref pin_a), Some(ref pin_b)) = (&self.pin_a, &self.pin_b) {
-                    let a = pin_a.get_value().unwrap_or(0) != 0;
-                    let b = pin_b.get_value().unwrap_or(0) != 0;
-
-                    // Quadrature decoding logic
-                    // Standard Gray code quadrature state machine
-                    let state_change = (self.last_a != a) || (self.last_b != b);
-
-                    if state_change {
-                        // Determine direction
-                        let forward = (self.last_a && !self.last_b && !a && !b)
-                            || (!self.last_a && !self.last_b && !a && b)
-                            || (!self.last_a && b && a && b)
-                            || (a && b && a && !b);
-
-                        let backward = (!self.last_a && !self.last_b && a && !b)
-                            || (a && !self.last_b && a && b)
-                            || (a && b && !a && b)
-                            || (!a && b && !a && !b);
-
-                        if forward {
-                            self.encoder_count += 1;
-                        } else if backward {
-                            self.encoder_count -= 1;
-                        }
-
-                        self.last_a = a;
-                        self.last_b = b;
-                    }
-
-                    // Convert encoder count to position in meters
-                    let revolutions = self.encoder_count as f64 / (self.encoder_resolution * 4.0); // 4x for quadrature
-                    let wheel_revolutions = revolutions / self.gear_ratio;
-                    wheel_revolutions * 2.0 * std::f64::consts::PI * self.wheel_radius
-                } else {
-                    0.0
-                }
-            }
-            #[cfg(not(feature = "gpio-hardware"))]
-            EncoderBackend::GpioQuadrature => 0.0,
-        }
-    }
-
-    fn calculate_velocity(&mut self, current_position: f64, dt: f64) -> f64 {
-        if dt > 0.0 {
-            let position_delta = current_position - self.last_position;
-            self.velocity = position_delta / dt;
-            self.total_distance += position_delta.abs();
-        } else {
-            self.velocity = 0.0;
-        }
-
-        self.last_position = current_position;
-        self.velocity
-    }
-
-    fn publish_odometry(&self, linear_velocity: f64, angular_velocity: f64) {
-        let current_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64;
-
-        // Create odometry message (simplified - real implementation would calculate pose)
-        let mut odom = Odometry::new();
-
-        // Set frame information
-        odom.frame_id = self
-            .frame_id
-            .clone()
-            .into_bytes()
-            .try_into()
-            .unwrap_or([0; 32]);
-        odom.child_frame_id = self
-            .child_frame_id
-            .clone()
-            .into_bytes()
-            .try_into()
-            .unwrap_or([0; 32]);
-
-        // Set velocities
-        odom.twist.linear[0] = linear_velocity;
-        odom.twist.angular[2] = angular_velocity;
-
-        // Set timestamp
-        odom.timestamp = current_time;
-
-        let _ = self.publisher.send(odom, &mut None);
-    }
-
-    /// Set simulation velocities (for testing without hardware)
-    pub fn set_simulation_velocity(&mut self, linear: f64, angular: f64) {
-        self.sim_velocity = linear;
-        self.sim_angular_velocity = angular;
+    /// Get total samples received
+    pub fn get_sample_count(&self) -> u64 {
+        self.sample_count
     }
 }
 
-impl<P> Node for EncoderNode<P>
+impl<D, P> Node for EncoderNode<D, P>
 where
+    D: Sensor<Output = Odometry>,
     P: Processor<Odometry>,
 {
     fn name(&self) -> &'static str {
@@ -392,122 +220,100 @@ where
     }
 
     fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        // Initialize the driver
+        self.driver.init()?;
+        self.is_initialized = true;
+
+        // Initialize processor
         self.processor.on_start();
-        ctx.log_info("Encoder node initialized");
 
-        match self.backend {
-            EncoderBackend::Simulation => {
-                ctx.log_info("Encoder simulation mode enabled");
-            }
-            EncoderBackend::GpioQuadrature => {
-                ctx.log_info(&format!(
-                    "GPIO quadrature encoder: pins {} and {}",
-                    self.gpio_pin_a, self.gpio_pin_b
-                ));
-            }
-        }
+        ctx.log_info(&format!(
+            "EncoderNode initialized with driver: {} ({})",
+            self.driver.name(),
+            self.driver.id()
+        ));
 
-        // Initialize hardware
-        if !self.initialize_encoder(Some(ctx)) {
-            ctx.log_error("Failed to initialize encoder hardware");
-        }
+        Ok(())
+    }
 
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("EncoderNode shutting down - releasing encoder resources");
+
+        // Call processor shutdown hook
+        self.processor.on_shutdown();
+
+        // Shutdown driver
+        self.driver.shutdown()?;
+
+        self.is_initialized = false;
+        ctx.log_info("Encoder resources released safely");
         Ok(())
     }
 
     fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+        // Call processor tick hook
         self.processor.on_tick();
 
-        let current_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
-
-        // Calculate delta time
-        let dt = if self.last_time > 0 {
-            (current_time - self.last_time) as f64 / 1000.0
-        } else {
-            0.01 // 10ms default
-        };
-        self.last_time = current_time;
-
-        // Read encoder position and calculate velocity
-        let current_position = self.read_encoder_position();
-        let linear_velocity = self.calculate_velocity(current_position, dt);
-
-        // Build odometry message
-        let odom_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64;
-
-        let mut odom = Odometry::new();
-        odom.frame_id = self
-            .frame_id
-            .clone()
-            .into_bytes()
-            .try_into()
-            .unwrap_or([0; 32]);
-        odom.child_frame_id = self
-            .child_frame_id
-            .clone()
-            .into_bytes()
-            .try_into()
-            .unwrap_or([0; 32]);
-        odom.twist.linear[0] = linear_velocity;
-        odom.twist.angular[2] = self.sim_angular_velocity;
-        odom.timestamp = odom_time;
-
-        // Process through pipeline and publish
-        if let Some(processed) = self.processor.process(odom) {
-            let _ = self.publisher.send(processed, &mut None);
-        }
-    }
-
-    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
-        self.processor.on_shutdown();
-
-        #[cfg(feature = "gpio-hardware")]
-        {
-            if let Some(ref pin_a) = self.pin_a {
-                let _ = pin_a.unexport();
-                ctx.log_info(&format!("GPIO pin {} unexported", self.gpio_pin_a));
-            }
-            if let Some(ref pin_b) = self.pin_b {
-                let _ = pin_b.unexport();
-                ctx.log_info(&format!("GPIO pin {} unexported", self.gpio_pin_b));
-            }
-            self.pin_a = None;
-            self.pin_b = None;
+        // Check if driver has data available
+        if !self.driver.has_data() {
+            return;
         }
 
-        Ok(())
+        // Read and publish odometry data (through processor pipeline)
+        match self.driver.read() {
+            Ok(odom) => {
+                self.sample_count += 1;
+                self.last_sample_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
+
+                // Process through pipeline (filter/transform)
+                if let Some(processed) = self.processor.process(odom) {
+                    let _ = self.publisher.send(processed, &mut None);
+                }
+            }
+            Err(e) => {
+                // Log error but continue - sensor might recover
+                eprintln!("EncoderNode: Failed to read data: {}", e);
+            }
+        }
     }
 }
 
-/// Builder for EncoderNode with fluent API for processor configuration
-pub struct EncoderNodeBuilder<P>
+/// Builder for EncoderNode with custom processor
+pub struct EncoderNodeBuilder<D, P>
 where
+    D: Sensor<Output = Odometry>,
     P: Processor<Odometry>,
 {
     topic: String,
+    driver: Option<D>,
     backend: EncoderBackend,
     processor: P,
 }
 
-impl EncoderNodeBuilder<PassThrough<Odometry>> {
+impl EncoderNodeBuilder<EncoderDriver, PassThrough<Odometry>> {
     /// Create a new builder with default settings
     pub fn new() -> Self {
         Self {
             topic: "odom".to_string(),
+            driver: None,
             backend: EncoderBackend::Simulation,
             processor: PassThrough::new(),
         }
     }
 }
 
-impl<P> EncoderNodeBuilder<P>
+impl Default for EncoderNodeBuilder<EncoderDriver, PassThrough<Odometry>> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<D, P> EncoderNodeBuilder<D, P>
 where
+    D: Sensor<Output = Odometry>,
     P: Processor<Odometry>,
 {
     /// Set the topic for publishing odometry
@@ -516,19 +322,25 @@ where
         self
     }
 
-    /// Set the encoder backend
+    /// Set the encoder backend (creates appropriate driver on build)
     pub fn backend(mut self, backend: EncoderBackend) -> Self {
         self.backend = backend;
         self
     }
 
+    /// Alias for backend
+    pub fn with_backend(self, backend: EncoderBackend) -> Self {
+        self.backend(backend)
+    }
+
     /// Set a custom processor
-    pub fn with_processor<P2>(self, processor: P2) -> EncoderNodeBuilder<P2>
+    pub fn with_processor<P2>(self, processor: P2) -> EncoderNodeBuilder<D, P2>
     where
         P2: Processor<Odometry>,
     {
         EncoderNodeBuilder {
             topic: self.topic,
+            driver: self.driver,
             backend: self.backend,
             processor,
         }
@@ -538,24 +350,29 @@ where
     pub fn with_closure<F>(
         self,
         f: F,
-    ) -> EncoderNodeBuilder<ClosureProcessor<Odometry, Odometry, F>>
+    ) -> EncoderNodeBuilder<D, ClosureProcessor<Odometry, Odometry, F>>
     where
         F: FnMut(Odometry) -> Odometry + Send + 'static,
     {
         EncoderNodeBuilder {
             topic: self.topic,
+            driver: self.driver,
             backend: self.backend,
             processor: ClosureProcessor::new(f),
         }
     }
 
     /// Add a filter processor
-    pub fn with_filter<F>(self, f: F) -> EncoderNodeBuilder<FilterProcessor<Odometry, Odometry, F>>
+    pub fn with_filter<F>(
+        self,
+        f: F,
+    ) -> EncoderNodeBuilder<D, FilterProcessor<Odometry, Odometry, F>>
     where
         F: FnMut(Odometry) -> Option<Odometry> + Send + 'static,
     {
         EncoderNodeBuilder {
             topic: self.topic,
+            driver: self.driver,
             backend: self.backend,
             processor: FilterProcessor::new(f),
         }
@@ -565,46 +382,85 @@ where
     pub fn pipe<P2>(
         self,
         next: P2,
-    ) -> EncoderNodeBuilder<Pipeline<Odometry, Odometry, Odometry, P, P2>>
+    ) -> EncoderNodeBuilder<D, Pipeline<Odometry, Odometry, Odometry, P, P2>>
     where
         P2: Processor<Odometry, Output = Odometry>,
         P: Processor<Odometry, Output = Odometry>,
     {
         EncoderNodeBuilder {
             topic: self.topic,
+            driver: self.driver,
             backend: self.backend,
             processor: Pipeline::new(self.processor, next),
         }
     }
+}
 
-    /// Build the EncoderNode
-    pub fn build(self) -> Result<EncoderNode<P>> {
+impl<P> EncoderNodeBuilder<EncoderDriver, P>
+where
+    P: Processor<Odometry>,
+{
+    /// Build the node with EncoderDriver (default driver type)
+    pub fn build(self) -> Result<EncoderNode<EncoderDriver, P>> {
+        let driver_backend: EncoderDriverBackend = self.backend.into();
+        let driver = EncoderDriver::new(driver_backend)?;
+
         Ok(EncoderNode {
             publisher: Hub::new(&self.topic)?,
+            driver,
             frame_id: "odom".to_string(),
             child_frame_id: "base_link".to_string(),
-            encoder_resolution: 1024.0,
-            wheel_radius: 0.1,
-            gear_ratio: 1.0,
-            backend: self.backend,
-            gpio_pin_a: 17,
-            gpio_pin_b: 27,
-            last_position: 0.0,
-            last_time: 0,
-            velocity: 0.0,
-            total_distance: 0.0,
-            encoder_count: 0,
-            #[cfg(feature = "gpio-hardware")]
-            pin_a: None,
-            #[cfg(feature = "gpio-hardware")]
-            pin_b: None,
-            #[cfg(feature = "gpio-hardware")]
-            last_a: false,
-            #[cfg(feature = "gpio-hardware")]
-            last_b: false,
-            sim_velocity: 0.0,
-            sim_angular_velocity: 0.0,
+            is_initialized: false,
+            sample_count: 0,
+            last_sample_time: 0,
             processor: self.processor,
         })
     }
 }
+
+// Builder for custom drivers
+impl<D, P> EncoderNodeBuilder<D, P>
+where
+    D: Sensor<Output = Odometry>,
+    P: Processor<Odometry>,
+{
+    /// Set a custom driver
+    pub fn with_driver<D2>(self, driver: D2) -> EncoderNodeBuilder<D2, P>
+    where
+        D2: Sensor<Output = Odometry>,
+    {
+        EncoderNodeBuilder {
+            topic: self.topic,
+            driver: Some(driver),
+            backend: self.backend,
+            processor: self.processor,
+        }
+    }
+
+    /// Build the node with a custom driver (requires driver to be set)
+    pub fn build_with_driver(self) -> Result<EncoderNode<D, P>>
+    where
+        D: Default,
+    {
+        let driver = self.driver.unwrap_or_default();
+
+        Ok(EncoderNode {
+            publisher: Hub::new(&self.topic)?,
+            driver,
+            frame_id: "odom".to_string(),
+            child_frame_id: "base_link".to_string(),
+            is_initialized: false,
+            sample_count: 0,
+            last_sample_time: 0,
+            processor: self.processor,
+        })
+    }
+}
+
+// Convenience type aliases for common driver types
+/// EncoderNode with SimulationEncoderDriver
+pub type SimulationEncoderNode<P = PassThrough<Odometry>> = EncoderNode<SimulationEncoderDriver, P>;
+
+#[cfg(feature = "gpio-hardware")]
+/// EncoderNode with GpioEncoderDriver
+pub type GpioEncoderNode<P = PassThrough<Odometry>> = EncoderNode<GpioEncoderDriver, P>;

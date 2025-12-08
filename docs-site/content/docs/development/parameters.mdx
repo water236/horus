@@ -6,7 +6,7 @@ order: 18
 
 # Parameters Guide
 
-> ** Under Development**: The parameters system is currently under active development. The core parameter API (`ctx.params.get_*()` and `ctx.params.set()`) works as documented, but the dashboard UI for parameter management and some advanced features are still being finalized. Check back for updates.
+> ** Under Development**: The parameters system is currently under active development. The core parameter API (`ctx.params.get_*()` and `ctx.params.set()`) works as documented, but the monitor UI for parameter management and some advanced features are still being finalized. Check back for updates.
 
 Runtime parameters in HORUS provide **dynamic configuration** without recompiling code. Adjust speeds, gains, thresholds, and behaviors on-the-fly for rapid prototyping and tuning.
 
@@ -21,7 +21,7 @@ let pid_kp = 1.0;
 
 **With parameters:**
 ```rust
-// Dynamic - change at runtime via dashboard or CLI
+// Dynamic - change at runtime via monitor or CLI
 let max_speed = ctx.params.get_f64("motion.max_speed", 1.5);
 let pid_kp = ctx.params.get_f64("control.pid.kp", 1.0);
 ```
@@ -93,7 +93,7 @@ ctx.params.get_f64("kp", 1.0);
 - Clear organization
 - Avoid name collisions
 - Easy to export/import subsets
-- Natural grouping in dashboard
+- Natural grouping in monitor
 
 ## Using Parameters in Nodes
 
@@ -260,19 +260,19 @@ control:
 
 **Customization:**
 1. File is created on first launch
-2. Edit directly or use dashboard
+2. Edit directly or use monitor
 3. Changes persist across restarts
 4. Delete file to reset to defaults
 
 ## Managing Parameters
 
-### Via Dashboard
+### Via Monitor
 
 **Web interface** (easiest method):
 
 ```bash
-# Start dashboard
-horus dashboard
+# Start monitor
+horus monitor
 
 # Navigate to Parameters tab
 #  View all parameters
@@ -287,7 +287,7 @@ horus dashboard
 - Import from YAML/JSON
 - Delete individual parameters
 
-See [Dashboard Guide](/dashboard#parameter-management) for API details.
+See [Monitor Guide](/monitor#parameter-management) for API details.
 
 ### Via Code
 
@@ -385,9 +385,9 @@ node! {
 
 **Tuning workflow:**
 1. Start robot with default gains
-2. Open dashboard  Parameters
+2. Open monitor  Parameters
 3. Adjust `control.pid.kp/ki/kd` while robot runs
-4. Observe behavior in dashboard metrics
+4. Observe behavior in monitor metrics
 5. Repeat until satisfactory
 6. Parameters auto-save - done!
 
@@ -631,7 +631,7 @@ init(ctx) {
 
 ```bash
 # Save current parameters to preset
-horus dashboard
+horus monitor
 #  Parameters tab  Export  Save as "aggressive_tuning.yaml"
 
 # Switch to different preset
@@ -666,7 +666,7 @@ chmod 644 ~/.horus/config/params.yaml
 
 ### Parameters Not Saving
 
-**Problem:** Changes in dashboard don't persist.
+**Problem:** Changes in monitor don't persist.
 
 **Cause:** Config directory doesn't exist or lacks write permissions.
 
@@ -775,7 +775,7 @@ tick(ctx) {
 
 ## Next Steps
 
-- **[Dashboard Guide](/development/dashboard)** - Manage parameters via web interface
-- **[node! Macro Guide](/core-concepts/node-macro)** - Learn about `init()` and `tick()` hooks
-- **[Examples](/basic-examples)** - See real-world parameter usage
+- **[Monitor Guide](/development/monitor)** - Manage parameters via web interface
+- **[node! Macro Guide](/concepts/node-macro)** - Learn about `init()` and `tick()` hooks
+- **[Examples](/rust/examples/basic-examples)** - See real-world parameter usage
 - **[CLI Reference](/development/cli-reference)** - Command-line parameter tools

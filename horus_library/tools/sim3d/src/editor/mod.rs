@@ -136,12 +136,16 @@ impl Plugin for EditorPlugin {
             .add_event::<scene_manager::LoadSceneEvent>()
             .add_event::<scene_manager::ClearSceneEvent>()
             .add_event::<robot_browser::LoadRobotEvent>()
+            .add_event::<hierarchy::DeleteEntityEvent>()
+            .add_event::<hierarchy::DuplicateEntityEvent>()
+            .add_event::<undo::UndoEvent>()
+            .add_event::<undo::RedoEvent>()
             // Core editor systems
             .add_systems(
                 Update,
                 (
                     ui::editor_ui_system,
-                    // hierarchy::hierarchy_panel_system, // TODO: Fix Bevy 0.15 compatibility
+                    hierarchy::hierarchy_panel_system,
                     gizmos::gizmo_system,
                 )
                     .run_if(editor_enabled),
@@ -151,9 +155,15 @@ impl Plugin for EditorPlugin {
                 (
                     selection::selection_system,
                     camera::editor_camera_system,
-                    // undo::undo_keyboard_system, // TODO: Fix Bevy 0.15 compatibility
+                    undo::undo_keyboard_system,
+                    hierarchy::delete_entity_system,
+                    hierarchy::duplicate_entity_system,
                 )
                     .run_if(editor_enabled),
+            )
+            .add_systems(
+                Last,
+                (undo::process_undo_system, undo::process_redo_system).chain(),
             )
             // Visual UX systems (the new stuff!)
             .add_systems(
@@ -201,11 +211,3 @@ impl bevy::app::Plugin for EditorPlugin {
 }
 
 // Re-export commonly used types
-#[cfg(feature = "visual")]
-pub use property_editor::{EditablePhysics, EditableVisual};
-#[cfg(feature = "visual")]
-pub use robot_browser::{LoadRobotEvent, RobotBrowserState, ROBOT_PRESETS};
-#[cfg(feature = "visual")]
-pub use scene_manager::{LoadSceneEvent, SaveSceneEvent, SceneManagerState, SerializableScene};
-#[cfg(feature = "visual")]
-pub use spawn_palette::{SpawnObjectEvent, SpawnPaletteState};

@@ -46,6 +46,7 @@
 //! ```
 
 pub mod algorithms;
+pub mod drivers;
 pub mod hframe;
 pub mod messages;
 pub mod nodes;
@@ -61,6 +62,57 @@ pub use horus_core::core::LogSummary;
 
 // Re-export message types at the crate root for convenience
 pub use messages::*;
+
+// Re-export driver types
+// IMU
+#[cfg(feature = "bno055-imu")]
+pub use drivers::Bno055Driver;
+#[cfg(feature = "mpu6050-imu")]
+pub use drivers::Mpu6050Driver;
+pub use drivers::{ImuDriver, SimulationImuDriver};
+
+// Camera
+#[cfg(feature = "opencv-backend")]
+pub use drivers::OpenCvCameraDriver;
+#[cfg(feature = "v4l2-backend")]
+pub use drivers::V4l2CameraDriver;
+pub use drivers::{CameraDriver, SimulationCameraDriver};
+
+// LiDAR
+#[cfg(feature = "rplidar")]
+pub use drivers::RplidarDriver;
+pub use drivers::{LidarDriver, SimulationLidarDriver};
+
+// GPS
+#[cfg(feature = "nmea-gps")]
+pub use drivers::NmeaGpsDriver;
+pub use drivers::{GpsDriver, SimulationGpsDriver};
+
+// Encoder
+#[cfg(feature = "gpio-hardware")]
+pub use drivers::GpioEncoderDriver;
+pub use drivers::{EncoderDriver, SimulationEncoderDriver};
+
+// Motor
+#[cfg(feature = "gpio-hardware")]
+pub use drivers::GpioMotorDriver;
+pub use drivers::{MotorDriver, SimulationMotorDriver};
+
+// Servo
+#[cfg(feature = "i2c-hardware")]
+pub use drivers::Pca9685ServoDriver;
+pub use drivers::{ServoDriver, SimulationServoDriver};
+
+// Bus (I2C, SPI, CAN)
+#[cfg(feature = "i2c-hardware")]
+pub use drivers::LinuxI2cDriver;
+#[cfg(feature = "spi-hardware")]
+pub use drivers::LinuxSpiDriver;
+#[cfg(feature = "can-hardware")]
+pub use drivers::SocketCanDriver;
+pub use drivers::{
+    CanDriver, I2cDriver, SimulationCanDriver, SimulationI2cDriver, SimulationSpiDriver, SpiDriver,
+};
 
 // Re-export commonly used nodes for convenience
 // Always available (hardware-independent)

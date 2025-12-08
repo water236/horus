@@ -1,5 +1,11 @@
+//! Camera Node - Generic camera interface for vision input
+//!
+//! This node reads images from camera sensors and publishes Image messages.
+//! It uses the driver abstraction layer to support multiple hardware backends.
+
 use crate::vision::ImageEncoding;
 use crate::{CameraInfo, Image};
+use horus_core::driver::{Driver, Sensor};
 use horus_core::error::HorusResult;
 
 // Type alias for cleaner signatures
@@ -12,113 +18,191 @@ use crate::nodes::processor::{
     ClosureProcessor, FilterProcessor, PassThrough, Pipeline, Processor,
 };
 
+// Import driver types
+use crate::drivers::camera::{CameraDriver, CameraDriverBackend, SimulationCameraDriver};
+
+#[cfg(feature = "opencv-backend")]
+use crate::drivers::camera::OpenCvCameraDriver;
+
+#[cfg(feature = "v4l2-backend")]
+use crate::drivers::camera::V4l2CameraDriver;
+
+/// Camera backend type (deprecated - use CameraDriverBackend instead)
+///
+/// This enum is kept for backward compatibility. New code should use
+/// `CameraDriverBackend` from `crate::drivers::camera`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CameraBackend {
+    Simulation,
+    OpenCv,
+    V4l2,
+}
+
+impl From<CameraBackend> for CameraDriverBackend {
+    fn from(backend: CameraBackend) -> Self {
+        match backend {
+            CameraBackend::Simulation => CameraDriverBackend::Simulation,
+            #[cfg(feature = "opencv-backend")]
+            CameraBackend::OpenCv => CameraDriverBackend::OpenCv,
+            #[cfg(not(feature = "opencv-backend"))]
+            CameraBackend::OpenCv => CameraDriverBackend::Simulation, // Fallback
+            #[cfg(feature = "v4l2-backend")]
+            CameraBackend::V4l2 => CameraDriverBackend::V4l2,
+            #[cfg(not(feature = "v4l2-backend"))]
+            CameraBackend::V4l2 => CameraDriverBackend::Simulation, // Fallback
+        }
+    }
+}
+
 /// Camera Node - Generic camera interface for vision input
 ///
 /// Captures images from various camera sources and publishes Image/CompressedImage messages.
 /// Supports multiple backends (OpenCV, V4L2) and configurable image parameters.
 ///
-/// # Hybrid Pattern
+/// # Driver System
+///
+/// This node uses the HORUS driver abstraction layer. Drivers handle all
+/// hardware-specific code, while the node handles HORUS integration (topics,
+/// scheduling, lifecycle).
+///
+/// ## Supported Drivers
+///
+/// - `SimulationCameraDriver` - Always available, generates synthetic images
+/// - `OpenCvCameraDriver` - OpenCV-based camera (requires `opencv-backend` feature)
+/// - `V4l2CameraDriver` - Video4Linux2 camera (requires `v4l2-backend` feature)
+///
+/// # Example
 ///
 /// ```rust,ignore
+/// use horus_library::nodes::CameraNode;
+/// use horus_library::drivers::SimulationCameraDriver;
+///
+/// // Using the default simulation driver
+/// let node = CameraNode::new()?;
+///
+/// // Using a specific driver
+/// let driver = SimulationCameraDriver::new();
+/// let node = CameraNode::with_driver("camera", driver)?;
+///
+/// // Using the builder for custom configuration
 /// let node = CameraNode::builder()
+///     .with_topic("custom_camera")
+///     .with_backend(CameraBackend::Simulation)
 ///     .with_closure(|mut img| {
-///         // Apply image processing
+///         // Process image
 ///         img
 ///     })
 ///     .build()?;
 /// ```
-pub struct CameraNode<P = PassThrough<Image>>
+pub struct CameraNode<D = CameraDriver, P = PassThrough<Image>>
 where
+    D: Sensor<Output = Image>,
     P: Processor<Image>,
 {
     publisher: Hub<Image>,
     info_publisher: Hub<CameraInfo>,
 
+    // Driver (handles hardware abstraction)
+    driver: D,
+
     // Configuration
-    device_id: u32,
     width: u32,
     height: u32,
     fps: f32,
     encoding: ImageEncoding,
-    compress_images: bool,
-    quality: u8,
 
     // State
     is_initialized: bool,
     frame_count: u64,
     last_frame_time: u64,
 
-    #[cfg(feature = "opencv-backend")]
-    capture: Option<opencv::videoio::VideoCapture>,
-
-    // V4L2 backend state
-    #[cfg(feature = "v4l2-backend")]
-    v4l2_fd: Option<i32>,
-    #[cfg(feature = "v4l2-backend")]
-    v4l2_buffers: Vec<(*mut u8, usize)>,
-    #[cfg(feature = "v4l2-backend")]
-    v4l2_buffer_count: u32,
-
     // Processor for hybrid pattern
     processor: P,
 }
 
-impl CameraNode {
-    /// Create a new camera node with default topic "camera.image"
+impl CameraNode<CameraDriver, PassThrough<Image>> {
+    /// Create a new camera node with default topic "camera" in simulation mode
     pub fn new() -> Result<Self> {
-        Self::new_with_topic("camera")
+        Self::new_with_backend("camera", CameraBackend::Simulation)
     }
 
     /// Create a new camera node with custom topic prefix
     pub fn new_with_topic(topic_prefix: &str) -> Result<Self> {
+        Self::new_with_backend(topic_prefix, CameraBackend::Simulation)
+    }
+
+    /// Create a new camera node with specific hardware backend
+    pub fn new_with_backend(topic_prefix: &str, backend: CameraBackend) -> Result<Self> {
+        let driver_backend: CameraDriverBackend = backend.into();
+        let driver = CameraDriver::new(driver_backend)?;
+
         let image_topic = format!("{}.image", topic_prefix);
         let info_topic = format!("{}.camera_info", topic_prefix);
 
         Ok(Self {
             publisher: Hub::new(&image_topic)?,
             info_publisher: Hub::new(&info_topic)?,
-
-            device_id: 0,
+            driver,
             width: 640,
             height: 480,
             fps: 30.0,
             encoding: ImageEncoding::Bgr8,
-            compress_images: false,
-            quality: 90,
-
             is_initialized: false,
             frame_count: 0,
             last_frame_time: 0,
-
-            #[cfg(feature = "opencv-backend")]
-            capture: None,
-
-            #[cfg(feature = "v4l2-backend")]
-            v4l2_fd: None,
-            #[cfg(feature = "v4l2-backend")]
-            v4l2_buffers: Vec::new(),
-            #[cfg(feature = "v4l2-backend")]
-            v4l2_buffer_count: 4,
-
             processor: PassThrough::new(),
         })
     }
 
     /// Create a builder for advanced configuration
-    pub fn builder() -> CameraNodeBuilder<PassThrough<Image>> {
+    pub fn builder() -> CameraNodeBuilder<CameraDriver, PassThrough<Image>> {
         CameraNodeBuilder::new()
     }
 }
 
-impl<P> CameraNode<P>
+impl<D> CameraNode<D, PassThrough<Image>>
 where
+    D: Sensor<Output = Image>,
+{
+    /// Create a new camera node with a custom driver
+    ///
+    /// This allows using any driver that implements `Sensor<Output = Image>`,
+    /// including custom drivers from the marketplace.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use horus_library::nodes::CameraNode;
+    /// use horus_library::drivers::SimulationCameraDriver;
+    ///
+    /// let driver = SimulationCameraDriver::new();
+    /// let node = CameraNode::with_driver("camera", driver)?;
+    /// ```
+    pub fn with_driver(topic_prefix: &str, driver: D) -> Result<Self> {
+        let image_topic = format!("{}.image", topic_prefix);
+        let info_topic = format!("{}.camera_info", topic_prefix);
+
+        Ok(Self {
+            publisher: Hub::new(&image_topic)?,
+            info_publisher: Hub::new(&info_topic)?,
+            driver,
+            width: 640,
+            height: 480,
+            fps: 30.0,
+            encoding: ImageEncoding::Bgr8,
+            is_initialized: false,
+            frame_count: 0,
+            last_frame_time: 0,
+            processor: PassThrough::new(),
+        })
+    }
+}
+
+impl<D, P> CameraNode<D, P>
+where
+    D: Sensor<Output = Image>,
     P: Processor<Image>,
 {
-    /// Set camera device ID (0 for default camera)
-    pub fn set_device_id(&mut self, device_id: u32) {
-        self.device_id = device_id;
-    }
-
     /// Set image resolution
     pub fn set_resolution(&mut self, width: u32, height: u32) {
         self.width = width;
@@ -133,12 +217,6 @@ where
     /// Set image encoding format
     pub fn set_encoding(&mut self, encoding: ImageEncoding) {
         self.encoding = encoding;
-    }
-
-    /// Enable/disable image compression
-    pub fn set_compression(&mut self, enabled: bool, quality: u8) {
-        self.compress_images = enabled;
-        self.quality = quality.min(100);
     }
 
     /// Get current frame rate (frames per second)
@@ -165,406 +243,24 @@ where
         self.frame_count
     }
 
-    #[cfg(feature = "opencv-backend")]
-    fn initialize_opencv(&mut self) -> bool {
-        use opencv::prelude::{VideoCaptureTrait, VideoCaptureTraitConst};
-        use opencv::videoio::VideoCaptureProperties::{
-            CAP_PROP_FPS, CAP_PROP_FRAME_HEIGHT, CAP_PROP_FRAME_WIDTH,
-        };
-        use opencv::videoio::{VideoCapture, CAP_ANY};
-
-        match VideoCapture::new(self.device_id as i32, CAP_ANY) {
-            Ok(mut cap) => {
-                // Set camera properties
-                let _ = cap.set(CAP_PROP_FRAME_WIDTH.into(), self.width as f64);
-                let _ = cap.set(CAP_PROP_FRAME_HEIGHT.into(), self.height as f64);
-                let _ = cap.set(CAP_PROP_FPS.into(), self.fps as f64);
-
-                if cap.is_opened().unwrap_or(false) {
-                    self.capture = Some(cap);
-                    self.publish_camera_info();
-                    return true;
-                }
-            }
-            Err(_) => {}
-        }
-        false
+    /// Get the driver's sample rate (if available)
+    pub fn get_sample_rate(&self) -> Option<f32> {
+        self.driver.sample_rate()
     }
 
-    #[cfg(not(feature = "opencv-backend"))]
-    #[allow(dead_code)]
-    fn initialize_opencv(&mut self) -> bool {
-        false
+    /// Check if the driver is available
+    pub fn is_driver_available(&self) -> bool {
+        self.driver.is_available()
     }
 
-    #[cfg(feature = "v4l2-backend")]
-    #[allow(dead_code)]
-    fn initialize_v4l2(&mut self) -> bool {
-        use std::ffi::CString;
-        use std::os::unix::io::RawFd;
-
-        // V4L2 ioctl constants
-        const VIDIOC_QUERYCAP: libc::c_ulong = 0x80685600;
-        const VIDIOC_S_FMT: libc::c_ulong = 0xc0d05605;
-        const VIDIOC_REQBUFS: libc::c_ulong = 0xc0145608;
-        const VIDIOC_QUERYBUF: libc::c_ulong = 0xc0445609;
-        const VIDIOC_STREAMON: libc::c_ulong = 0x40045612;
-        const VIDIOC_QBUF: libc::c_ulong = 0xc044560f;
-
-        const V4L2_CAP_VIDEO_CAPTURE: u32 = 0x00000001;
-        const V4L2_CAP_STREAMING: u32 = 0x04000000;
-        const V4L2_BUF_TYPE_VIDEO_CAPTURE: u32 = 1;
-        const V4L2_MEMORY_MMAP: u32 = 1;
-        const V4L2_PIX_FMT_YUYV: u32 = 0x56595559; // 'YUYV'
-        const V4L2_FIELD_NONE: u32 = 1;
-
-        // Open device
-        let device_path = format!("/dev/video{}", self.device_id);
-        let c_path = match CString::new(device_path.as_str()) {
-            Ok(p) => p,
-            Err(_) => return false,
-        };
-
-        let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDWR | libc::O_NONBLOCK) };
-        if fd < 0 {
-            return false;
-        }
-
-        // Query capabilities
-        #[repr(C)]
-        struct V4l2Capability {
-            driver: [u8; 16],
-            card: [u8; 32],
-            bus_info: [u8; 32],
-            version: u32,
-            capabilities: u32,
-            device_caps: u32,
-            reserved: [u32; 3],
-        }
-
-        let mut cap: V4l2Capability = unsafe { std::mem::zeroed() };
-        if unsafe { libc::ioctl(fd, VIDIOC_QUERYCAP, &mut cap) } < 0 {
-            unsafe { libc::close(fd) };
-            return false;
-        }
-
-        // Check for video capture and streaming support
-        if (cap.capabilities & V4L2_CAP_VIDEO_CAPTURE) == 0
-            || (cap.capabilities & V4L2_CAP_STREAMING) == 0
-        {
-            unsafe { libc::close(fd) };
-            return false;
-        }
-
-        // Set format
-        #[repr(C)]
-        struct V4l2PixFormat {
-            width: u32,
-            height: u32,
-            pixelformat: u32,
-            field: u32,
-            bytesperline: u32,
-            sizeimage: u32,
-            colorspace: u32,
-            priv_: u32,
-            flags: u32,
-            hsv_enc_or_ycbcr_enc: u32,
-            quantization: u32,
-            xfer_func: u32,
-        }
-
-        #[repr(C)]
-        struct V4l2Format {
-            type_: u32,
-            fmt: V4l2PixFormat,
-            _padding: [u8; 156], // Ensure struct is large enough
-        }
-
-        let mut fmt: V4l2Format = unsafe { std::mem::zeroed() };
-        fmt.type_ = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        fmt.fmt.width = self.width;
-        fmt.fmt.height = self.height;
-        fmt.fmt.pixelformat = V4L2_PIX_FMT_YUYV;
-        fmt.fmt.field = V4L2_FIELD_NONE;
-
-        if unsafe { libc::ioctl(fd, VIDIOC_S_FMT, &mut fmt) } < 0 {
-            unsafe { libc::close(fd) };
-            return false;
-        }
-
-        // Update actual dimensions from driver
-        self.width = fmt.fmt.width;
-        self.height = fmt.fmt.height;
-
-        // Request buffers
-        #[repr(C)]
-        struct V4l2RequestBuffers {
-            count: u32,
-            type_: u32,
-            memory: u32,
-            capabilities: u32,
-            flags: u8,
-            reserved: [u8; 3],
-        }
-
-        let mut req: V4l2RequestBuffers = unsafe { std::mem::zeroed() };
-        req.count = self.v4l2_buffer_count;
-        req.type_ = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        req.memory = V4L2_MEMORY_MMAP;
-
-        if unsafe { libc::ioctl(fd, VIDIOC_REQBUFS, &mut req) } < 0 {
-            unsafe { libc::close(fd) };
-            return false;
-        }
-
-        // Map buffers
-        #[repr(C)]
-        struct V4l2Buffer {
-            index: u32,
-            type_: u32,
-            bytesused: u32,
-            flags: u32,
-            field: u32,
-            timestamp: libc::timeval,
-            timecode: [u8; 32], // v4l2_timecode
-            sequence: u32,
-            memory: u32,
-            m_offset: u32, // union with userptr, fd
-            length: u32,
-            reserved2: u32,
-            reserved: u32,
-        }
-
-        self.v4l2_buffers.clear();
-
-        for i in 0..req.count {
-            let mut buf: V4l2Buffer = unsafe { std::mem::zeroed() };
-            buf.type_ = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-            buf.memory = V4L2_MEMORY_MMAP;
-            buf.index = i;
-
-            if unsafe { libc::ioctl(fd, VIDIOC_QUERYBUF, &mut buf) } < 0 {
-                // Unmap already mapped buffers
-                for (ptr, len) in &self.v4l2_buffers {
-                    unsafe { libc::munmap(*ptr as *mut libc::c_void, *len) };
-                }
-                self.v4l2_buffers.clear();
-                unsafe { libc::close(fd) };
-                return false;
-            }
-
-            let ptr = unsafe {
-                libc::mmap(
-                    std::ptr::null_mut(),
-                    buf.length as usize,
-                    libc::PROT_READ | libc::PROT_WRITE,
-                    libc::MAP_SHARED,
-                    fd,
-                    buf.m_offset as libc::off_t,
-                )
-            };
-
-            if ptr == libc::MAP_FAILED {
-                for (ptr, len) in &self.v4l2_buffers {
-                    unsafe { libc::munmap(*ptr as *mut libc::c_void, *len) };
-                }
-                self.v4l2_buffers.clear();
-                unsafe { libc::close(fd) };
-                return false;
-            }
-
-            self.v4l2_buffers
-                .push((ptr as *mut u8, buf.length as usize));
-
-            // Queue buffer
-            if unsafe { libc::ioctl(fd, VIDIOC_QBUF, &buf) } < 0 {
-                for (ptr, len) in &self.v4l2_buffers {
-                    unsafe { libc::munmap(*ptr as *mut libc::c_void, *len) };
-                }
-                self.v4l2_buffers.clear();
-                unsafe { libc::close(fd) };
-                return false;
-            }
-        }
-
-        // Start streaming
-        let buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        if unsafe { libc::ioctl(fd, VIDIOC_STREAMON, &buf_type) } < 0 {
-            for (ptr, len) in &self.v4l2_buffers {
-                unsafe { libc::munmap(*ptr as *mut libc::c_void, *len) };
-            }
-            self.v4l2_buffers.clear();
-            unsafe { libc::close(fd) };
-            return false;
-        }
-
-        self.v4l2_fd = Some(fd);
-        self.publish_camera_info();
-        true
+    /// Get the driver ID
+    pub fn driver_id(&self) -> &str {
+        self.driver.id()
     }
 
-    #[cfg(not(feature = "v4l2-backend"))]
-    #[allow(dead_code)]
-    fn initialize_v4l2(&mut self) -> bool {
-        false
-    }
-
-    fn initialize_camera(&mut self) -> bool {
-        if self.is_initialized {
-            return true;
-        }
-
-        // Try different backends
-        #[cfg(feature = "opencv-backend")]
-        if self.initialize_opencv() {
-            self.is_initialized = true;
-            return true;
-        }
-
-        #[cfg(feature = "v4l2-backend")]
-        if self.initialize_v4l2() {
-            self.is_initialized = true;
-            return true;
-        }
-
-        false
-    }
-
-    #[cfg(feature = "opencv-backend")]
-    fn capture_opencv_frame(&mut self) -> Option<Vec<u8>> {
-        use opencv::core::Mat;
-        use opencv::prelude::{MatTraitConst, MatTraitConstManual, VideoCaptureTrait};
-
-        if let Some(ref mut cap) = self.capture {
-            let mut frame = Mat::default();
-            if cap.read(&mut frame).unwrap_or(false) && !frame.empty() {
-                // Convert Mat to Vec<u8>
-                if let Ok(bytes) = frame.data_bytes() {
-                    return Some(bytes.to_vec());
-                }
-            }
-        }
-        None
-    }
-
-    #[cfg(not(feature = "opencv-backend"))]
-    #[allow(dead_code)]
-    fn capture_opencv_frame(&mut self) -> Option<Vec<u8>> {
-        None
-    }
-
-    #[cfg(feature = "v4l2-backend")]
-    fn capture_v4l2_frame(&mut self) -> Option<Vec<u8>> {
-        const VIDIOC_DQBUF: libc::c_ulong = 0xc0445611;
-        const VIDIOC_QBUF: libc::c_ulong = 0xc044560f;
-        const V4L2_BUF_TYPE_VIDEO_CAPTURE: u32 = 1;
-        const V4L2_MEMORY_MMAP: u32 = 1;
-
-        let fd = self.v4l2_fd?;
-
-        #[repr(C)]
-        struct V4l2Buffer {
-            index: u32,
-            type_: u32,
-            bytesused: u32,
-            flags: u32,
-            field: u32,
-            timestamp: libc::timeval,
-            timecode: [u8; 32],
-            sequence: u32,
-            memory: u32,
-            m_offset: u32,
-            length: u32,
-            reserved2: u32,
-            reserved: u32,
-        }
-
-        // Dequeue a buffer
-        let mut buf: V4l2Buffer = unsafe { std::mem::zeroed() };
-        buf.type_ = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        buf.memory = V4L2_MEMORY_MMAP;
-
-        if unsafe { libc::ioctl(fd, VIDIOC_DQBUF, &mut buf) } < 0 {
-            // Would block or error - no frame available
-            return None;
-        }
-
-        let idx = buf.index as usize;
-        if idx >= self.v4l2_buffers.len() {
-            // Re-queue the buffer
-            unsafe { libc::ioctl(fd, VIDIOC_QBUF, &buf) };
-            return None;
-        }
-
-        let (ptr, _len) = self.v4l2_buffers[idx];
-        let bytes_used = buf.bytesused as usize;
-
-        // Copy YUYV data
-        let yuyv_data = unsafe { std::slice::from_raw_parts(ptr, bytes_used) };
-
-        // Convert YUYV to BGR (OpenCV format)
-        let pixel_count = (self.width * self.height) as usize;
-        let mut bgr_data = vec![0u8; pixel_count * 3];
-
-        // YUYV to BGR conversion
-        // Each 4 bytes (Y0 U Y1 V) produces 2 BGR pixels
-        for i in 0..(pixel_count / 2) {
-            let yuyv_idx = i * 4;
-            if yuyv_idx + 3 >= yuyv_data.len() {
-                break;
-            }
-
-            let y0 = yuyv_data[yuyv_idx] as f32;
-            let u = yuyv_data[yuyv_idx + 1] as f32 - 128.0;
-            let y1 = yuyv_data[yuyv_idx + 2] as f32;
-            let v = yuyv_data[yuyv_idx + 3] as f32 - 128.0;
-
-            // Pixel 0
-            let bgr_idx0 = i * 6;
-            bgr_data[bgr_idx0] = (y0 + 1.772 * u).clamp(0.0, 255.0) as u8; // B
-            bgr_data[bgr_idx0 + 1] = (y0 - 0.344 * u - 0.714 * v).clamp(0.0, 255.0) as u8; // G
-            bgr_data[bgr_idx0 + 2] = (y0 + 1.402 * v).clamp(0.0, 255.0) as u8; // R
-
-            // Pixel 1
-            let bgr_idx1 = i * 6 + 3;
-            if bgr_idx1 + 2 < bgr_data.len() {
-                bgr_data[bgr_idx1] = (y1 + 1.772 * u).clamp(0.0, 255.0) as u8; // B
-                bgr_data[bgr_idx1 + 1] = (y1 - 0.344 * u - 0.714 * v).clamp(0.0, 255.0) as u8; // G
-                bgr_data[bgr_idx1 + 2] = (y1 + 1.402 * v).clamp(0.0, 255.0) as u8;
-                // R
-            }
-        }
-
-        // Re-queue the buffer for next frame
-        unsafe { libc::ioctl(fd, VIDIOC_QBUF, &buf) };
-
-        Some(bgr_data)
-    }
-
-    #[cfg(not(feature = "v4l2-backend"))]
-    #[allow(dead_code)]
-    fn capture_v4l2_frame(&mut self) -> Option<Vec<u8>> {
-        None
-    }
-
-    fn capture_frame(&mut self) -> Option<Vec<u8>> {
-        // Hardware-only: no test pattern fallback
-        // If backend initialization failed, this returns None
-        #[cfg(feature = "opencv-backend")]
-        {
-            return self.capture_opencv_frame();
-        }
-
-        #[cfg(feature = "v4l2-backend")]
-        {
-            return self.capture_v4l2_frame();
-        }
-
-        #[cfg(not(any(feature = "opencv-backend", feature = "v4l2-backend")))]
-        {
-            // No backend enabled - this should never compile due to module-level feature gate
-            compile_error!("CameraNode requires at least one camera backend feature: opencv-backend, v4l2-backend, realsense, or zed");
-        }
+    /// Get the driver name
+    pub fn driver_name(&self) -> &str {
+        self.driver.name()
     }
 
     fn publish_camera_info(&self) {
@@ -580,8 +276,9 @@ where
     }
 }
 
-impl<P> Node for CameraNode<P>
+impl<D, P> Node for CameraNode<D, P>
 where
+    D: Sensor<Output = Image>,
     P: Processor<Image>,
 {
     fn name(&self) -> &'static str {
@@ -589,41 +286,33 @@ where
     }
 
     fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        // Initialize the driver
+        self.driver.init()?;
+        self.is_initialized = true;
+
+        // Initialize processor
         self.processor.on_start();
-        ctx.log_info("CameraNode initialized");
+
+        // Publish initial camera info
+        self.publish_camera_info();
+
+        ctx.log_info(&format!(
+            "CameraNode initialized with driver: {} ({})",
+            self.driver.name(),
+            self.driver.id()
+        ));
+
         Ok(())
     }
 
     fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
-        self.processor.on_shutdown();
         ctx.log_info("CameraNode shutting down - releasing camera resources");
 
-        // Release OpenCV capture device
-        #[cfg(feature = "opencv-backend")]
-        {
-            self.capture = None;
-        }
+        // Call processor shutdown hook
+        self.processor.on_shutdown();
 
-        // Release V4L2 resources
-        #[cfg(feature = "v4l2-backend")]
-        {
-            const VIDIOC_STREAMOFF: libc::c_ulong = 0x40045613;
-            const V4L2_BUF_TYPE_VIDEO_CAPTURE: u32 = 1;
-
-            if let Some(fd) = self.v4l2_fd.take() {
-                // Stop streaming
-                let buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-                unsafe { libc::ioctl(fd, VIDIOC_STREAMOFF, &buf_type) };
-
-                // Unmap buffers
-                for (ptr, len) in self.v4l2_buffers.drain(..) {
-                    unsafe { libc::munmap(ptr as *mut libc::c_void, len) };
-                }
-
-                // Close device
-                unsafe { libc::close(fd) };
-            }
-        }
+        // Shutdown driver
+        self.driver.shutdown()?;
 
         self.is_initialized = false;
         ctx.log_info("Camera resources released safely");
@@ -631,44 +320,50 @@ where
     }
 
     fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+        // Call processor tick hook
         self.processor.on_tick();
 
-        // Initialize camera on first tick
-        if !self.is_initialized && !self.initialize_camera() {
-            return; // Skip if initialization failed
+        // Check if driver has data available
+        if !self.driver.has_data() {
+            return;
         }
 
-        // Capture and publish frame
-        if let Some(data) = self.capture_frame() {
-            self.frame_count += 1;
-            self.last_frame_time = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64;
+        // Read and publish image data (through processor pipeline)
+        match self.driver.read() {
+            Ok(image) => {
+                self.frame_count += 1;
+                self.last_frame_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
 
-            // Build image message
-            let image = Image::new(self.width, self.height, self.encoding, data);
+                // Process through pipeline (filter/transform)
+                if let Some(processed) = self.processor.process(image) {
+                    let _ = self.publisher.send(processed, &mut None);
+                }
 
-            // Process through pipeline and publish
-            if let Some(processed) = self.processor.process(image) {
-                let _ = self.publisher.send(processed, &mut None);
+                // Publish camera info periodically
+                if self.frame_count % 30 == 0 {
+                    self.publish_camera_info();
+                }
             }
-
-            // Publish camera info periodically
-            if self.frame_count % 30 == 0 {
-                self.publish_camera_info();
+            Err(e) => {
+                // Log error but continue - sensor might recover
+                eprintln!("CameraNode: Failed to read data: {}", e);
             }
         }
     }
 }
 
-/// Builder for CameraNode with fluent API for processor configuration
-pub struct CameraNodeBuilder<P>
+/// Builder for CameraNode with custom processor
+pub struct CameraNodeBuilder<D, P>
 where
+    D: Sensor<Output = Image>,
     P: Processor<Image>,
 {
     topic_prefix: String,
-    device_id: u32,
+    driver: Option<D>,
+    backend: CameraBackend,
     width: u32,
     height: u32,
     fps: f32,
@@ -676,12 +371,13 @@ where
     processor: P,
 }
 
-impl CameraNodeBuilder<PassThrough<Image>> {
-    /// Create a new builder with default settings
+impl CameraNodeBuilder<CameraDriver, PassThrough<Image>> {
+    /// Create a new builder with default configuration
     pub fn new() -> Self {
         Self {
             topic_prefix: "camera".to_string(),
-            device_id: 0,
+            driver: None,
+            backend: CameraBackend::Simulation,
             width: 640,
             height: 480,
             fps: 30.0,
@@ -691,8 +387,15 @@ impl CameraNodeBuilder<PassThrough<Image>> {
     }
 }
 
-impl<P> CameraNodeBuilder<P>
+impl Default for CameraNodeBuilder<CameraDriver, PassThrough<Image>> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<D, P> CameraNodeBuilder<D, P>
 where
+    D: Sensor<Output = Image>,
     P: Processor<Image>,
 {
     /// Set the topic prefix for publishing images
@@ -701,9 +404,14 @@ where
         self
     }
 
-    /// Set the camera device ID
-    pub fn device_id(mut self, id: u32) -> Self {
-        self.device_id = id;
+    /// Alias for topic_prefix
+    pub fn with_topic(self, prefix: &str) -> Self {
+        self.topic_prefix(prefix)
+    }
+
+    /// Set the camera backend (creates appropriate driver on build)
+    pub fn with_backend(mut self, backend: CameraBackend) -> Self {
+        self.backend = backend;
         self
     }
 
@@ -727,13 +435,14 @@ where
     }
 
     /// Set a custom processor
-    pub fn with_processor<P2>(self, processor: P2) -> CameraNodeBuilder<P2>
+    pub fn with_processor<P2>(self, processor: P2) -> CameraNodeBuilder<D, P2>
     where
         P2: Processor<Image>,
     {
         CameraNodeBuilder {
             topic_prefix: self.topic_prefix,
-            device_id: self.device_id,
+            driver: self.driver,
+            backend: self.backend,
             width: self.width,
             height: self.height,
             fps: self.fps,
@@ -742,14 +451,15 @@ where
         }
     }
 
-    /// Add a closure processor for transformations
-    pub fn with_closure<F>(self, f: F) -> CameraNodeBuilder<ClosureProcessor<Image, Image, F>>
+    /// Add a closure-based processor
+    pub fn with_closure<F>(self, f: F) -> CameraNodeBuilder<D, ClosureProcessor<Image, Image, F>>
     where
         F: FnMut(Image) -> Image + Send + 'static,
     {
         CameraNodeBuilder {
             topic_prefix: self.topic_prefix,
-            device_id: self.device_id,
+            driver: self.driver,
+            backend: self.backend,
             width: self.width,
             height: self.height,
             fps: self.fps,
@@ -759,13 +469,14 @@ where
     }
 
     /// Add a filter processor
-    pub fn with_filter<F>(self, f: F) -> CameraNodeBuilder<FilterProcessor<Image, Image, F>>
+    pub fn with_filter<F>(self, f: F) -> CameraNodeBuilder<D, FilterProcessor<Image, Image, F>>
     where
         F: FnMut(Image) -> Option<Image> + Send + 'static,
     {
         CameraNodeBuilder {
             topic_prefix: self.topic_prefix,
-            device_id: self.device_id,
+            driver: self.driver,
+            backend: self.backend,
             width: self.width,
             height: self.height,
             fps: self.fps,
@@ -775,13 +486,15 @@ where
     }
 
     /// Chain another processor in a pipeline
-    pub fn pipe<P2>(self, next: P2) -> CameraNodeBuilder<Pipeline<Image, Image, Image, P, P2>>
+    pub fn pipe<P2>(self, next: P2) -> CameraNodeBuilder<D, Pipeline<Image, Image, Image, P, P2>>
     where
-        P2: Processor<Image, Image>,
+        P2: Processor<Image, Output = Image>,
+        P: Processor<Image, Output = Image>,
     {
         CameraNodeBuilder {
             topic_prefix: self.topic_prefix,
-            device_id: self.device_id,
+            driver: self.driver,
+            backend: self.backend,
             width: self.width,
             height: self.height,
             fps: self.fps,
@@ -789,34 +502,93 @@ where
             processor: Pipeline::new(self.processor, next),
         }
     }
+}
 
-    /// Build the CameraNode
-    pub fn build(self) -> Result<CameraNode<P>> {
+impl<P> CameraNodeBuilder<CameraDriver, P>
+where
+    P: Processor<Image>,
+{
+    /// Build the node with CameraDriver (default driver type)
+    pub fn build(self) -> Result<CameraNode<CameraDriver, P>> {
+        let driver_backend: CameraDriverBackend = self.backend.into();
+        let driver = CameraDriver::new(driver_backend)?;
+
         let image_topic = format!("{}.image", self.topic_prefix);
         let info_topic = format!("{}.camera_info", self.topic_prefix);
 
         Ok(CameraNode {
             publisher: Hub::new(&image_topic)?,
             info_publisher: Hub::new(&info_topic)?,
-            device_id: self.device_id,
+            driver,
             width: self.width,
             height: self.height,
             fps: self.fps,
             encoding: self.encoding,
-            compress_images: false,
-            quality: 90,
             is_initialized: false,
             frame_count: 0,
             last_frame_time: 0,
-            #[cfg(feature = "opencv-backend")]
-            capture: None,
-            #[cfg(feature = "v4l2-backend")]
-            v4l2_fd: None,
-            #[cfg(feature = "v4l2-backend")]
-            v4l2_buffers: Vec::new(),
-            #[cfg(feature = "v4l2-backend")]
-            v4l2_buffer_count: 4,
             processor: self.processor,
         })
     }
 }
+
+// Builder for custom drivers
+impl<D, P> CameraNodeBuilder<D, P>
+where
+    D: Sensor<Output = Image>,
+    P: Processor<Image>,
+{
+    /// Set a custom driver
+    pub fn with_driver<D2>(self, driver: D2) -> CameraNodeBuilder<D2, P>
+    where
+        D2: Sensor<Output = Image>,
+    {
+        CameraNodeBuilder {
+            topic_prefix: self.topic_prefix,
+            driver: Some(driver),
+            backend: self.backend,
+            width: self.width,
+            height: self.height,
+            fps: self.fps,
+            encoding: self.encoding,
+            processor: self.processor,
+        }
+    }
+
+    /// Build the node with a custom driver (requires driver to be set)
+    pub fn build_with_driver(self) -> Result<CameraNode<D, P>>
+    where
+        D: Default,
+    {
+        let driver = self.driver.unwrap_or_default();
+
+        let image_topic = format!("{}.image", self.topic_prefix);
+        let info_topic = format!("{}.camera_info", self.topic_prefix);
+
+        Ok(CameraNode {
+            publisher: Hub::new(&image_topic)?,
+            info_publisher: Hub::new(&info_topic)?,
+            driver,
+            width: self.width,
+            height: self.height,
+            fps: self.fps,
+            encoding: self.encoding,
+            is_initialized: false,
+            frame_count: 0,
+            last_frame_time: 0,
+            processor: self.processor,
+        })
+    }
+}
+
+// Convenience type aliases for common driver types
+/// CameraNode with SimulationCameraDriver
+pub type SimulationCameraNode<P = PassThrough<Image>> = CameraNode<SimulationCameraDriver, P>;
+
+#[cfg(feature = "opencv-backend")]
+/// CameraNode with OpenCvCameraDriver
+pub type OpenCvCameraNode<P = PassThrough<Image>> = CameraNode<OpenCvCameraDriver, P>;
+
+#[cfg(feature = "v4l2-backend")]
+/// CameraNode with V4l2CameraDriver
+pub type V4l2CameraNode<P = PassThrough<Image>> = CameraNode<V4l2CameraDriver, P>;

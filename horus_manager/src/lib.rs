@@ -4,10 +4,11 @@
 
 pub mod commands;
 pub mod config;
-pub mod dashboard;
-pub mod dashboard_tui;
 pub mod dependency_resolver;
+pub mod discovery;
 pub mod graph;
+pub mod monitor;
+pub mod monitor_tui;
 pub mod node_detector;
 pub mod plugins;
 pub mod progress;

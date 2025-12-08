@@ -13,7 +13,7 @@ pub use messages::*;
 pub use publisher::{
     publish_hframe_system, publish_lidar2d_system, publish_lidar3d_system, HorusPublisher,
 };
-pub use sim3d_node::{Sim3dNode, Sim3dNodeHandle, Sim3dNodePlugin, Sim3dNodeState};
+pub use sim3d_node::Sim3dNodePlugin;
 pub use subscriber::{apply_cmd_vel_system, handle_robot_commands_system, HorusSubscriber};
 pub use transport_sync::HorusTransportSyncPlugin;
 

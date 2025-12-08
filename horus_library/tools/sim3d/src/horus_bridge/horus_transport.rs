@@ -158,6 +158,8 @@ pub struct HorusTransport {
     odom_hub: Option<Arc<Mutex<Hub<Odometry>>>>,
     /// Hub for JointState messages (publisher)
     joint_state_hub: Option<Arc<Mutex<Hub<JointState>>>>,
+    /// Hub for IMU messages (publisher)
+    imu_hub: Option<Arc<Mutex<Hub<Imu>>>>,
     /// Transport enabled flag
     enabled: bool,
     /// Robot name for topic naming
@@ -199,6 +201,7 @@ impl HorusTransport {
             laserscan_hub: None,
             odom_hub: None,
             joint_state_hub: None,
+            imu_hub: None,
             enabled: true,
             robot_name: robot_name.to_string(),
             session_id: session_id.map(String::from),
@@ -218,6 +221,7 @@ impl HorusTransport {
             laserscan_hub: None,
             odom_hub: None,
             joint_state_hub: None,
+            imu_hub: None,
             enabled: true,
             robot_name: robot_name.to_string(),
             session_id: None,
@@ -235,6 +239,7 @@ impl HorusTransport {
         let laserscan_topic = format!("{}.scan", self.robot_name);
         let odom_topic = format!("{}.odom", self.robot_name);
         let joint_state_topic = format!("{}.joint_states", self.robot_name);
+        let imu_topic = format!("{}.imu", self.robot_name);
 
         if let Ok(hub) = Hub::<Twist>::new(&cmd_vel_topic) {
             self.cmd_vel_hub = Some(Arc::new(Mutex::new(hub)));
@@ -253,6 +258,9 @@ impl HorusTransport {
         }
         if let Ok(hub) = Hub::<JointState>::new(&joint_state_topic) {
             self.joint_state_hub = Some(Arc::new(Mutex::new(hub)));
+        }
+        if let Ok(hub) = Hub::<Imu>::new(&imu_topic) {
+            self.imu_hub = Some(Arc::new(Mutex::new(hub)));
         }
     }
 
@@ -264,6 +272,7 @@ impl HorusTransport {
         let laserscan_topic = format!("{}.scan@{}", self.robot_name, endpoint);
         let odom_topic = format!("{}.odom@{}", self.robot_name, endpoint);
         let joint_state_topic = format!("{}.joint_states@{}", self.robot_name, endpoint);
+        let imu_topic = format!("{}.imu@{}", self.robot_name, endpoint);
 
         if let Ok(hub) = Hub::<Twist>::new(&cmd_vel_topic) {
             self.cmd_vel_hub = Some(Arc::new(Mutex::new(hub)));
@@ -282,6 +291,9 @@ impl HorusTransport {
         }
         if let Ok(hub) = Hub::<JointState>::new(&joint_state_topic) {
             self.joint_state_hub = Some(Arc::new(Mutex::new(hub)));
+        }
+        if let Ok(hub) = Hub::<Imu>::new(&imu_topic) {
+            self.imu_hub = Some(Arc::new(Mutex::new(hub)));
         }
     }
 
@@ -372,6 +384,19 @@ impl HorusTransport {
             return false;
         }
         if let Some(ref hub) = self.joint_state_hub {
+            if let Ok(hub_guard) = hub.lock() {
+                return hub_guard.send(msg, &mut None).is_ok();
+            }
+        }
+        false
+    }
+
+    /// Publish an IMU message
+    pub fn publish_imu(&self, msg: Imu) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        if let Some(ref hub) = self.imu_hub {
             if let Ok(hub_guard) = hub.lock() {
                 return hub_guard.send(msg, &mut None).is_ok();
             }

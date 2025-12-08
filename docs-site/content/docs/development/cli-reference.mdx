@@ -15,7 +15,7 @@ horus init                 # Initialize workspace in current directory
 horus new <name>           # Create a new project
 horus run [file]           # Build and run your app
 horus check                # Validate dependencies and environment
-horus dashboard [port]     # Monitor your system
+horus monitor [port]     # Monitor your system
 horus sim2d                # Launch 2D simulator
 horus sim3d                # Launch 3D simulator
 horus pkg <command>        # Manage packages (install, publish, etc.)
@@ -504,7 +504,7 @@ horus sim2d --world maze.yaml
 horus run navigation.rs --release
 
 # Terminal 3: Monitor
-horus dashboard
+horus monitor
 ```
 
 **Headless testing (CI/CD)**:
@@ -625,31 +625,31 @@ See [Simulation Guide](/development/simulation) for advanced features, custom sc
 
 ---
 
-## `horus dashboard` - Monitor Everything
+## `horus monitor` - Monitor Everything
 
-**What it does**: Opens a visual dashboard showing all your running nodes, messages, and performance.
+**What it does**: Opens a visual monitor showing all your running nodes, messages, and performance.
 
 **Why it's useful**: Debug problems visually. See message flow in real-time. Monitor performance.
 
 ### Basic Usage
 
 ```bash
-# Web dashboard (opens in browser)
-horus dashboard
+# Web monitor (opens in browser)
+horus monitor
 
 # Different port
-horus dashboard 8080
+horus monitor 8080
 
 # Text-based (for SSH)
-horus dashboard --tui
+horus monitor --tui
 
-# Reset dashboard password before starting
-horus dashboard --reset-password
+# Reset monitor password before starting
+horus monitor --reset-password
 ```
 
 ### What You See
 
-The dashboard shows:
+The monitor shows:
 - **All running nodes** - Names, status, tick rates
 - **Message flow** - What's talking to what
 - **Performance** - CPU, memory, latency per node
@@ -664,22 +664,22 @@ The dashboard shows:
 horus run --release
 
 # Terminal 2: Watch it
-horus dashboard
+horus monitor
 ```
 
 **Access from your phone**:
 ```bash
-horus dashboard
+horus monitor
 # Visit http://your-computer-ip:3000 from phone
 ```
 
 **Monitor over SSH**:
 ```bash
 ssh robot@192.168.1.100
-horus dashboard --tui
+horus monitor --tui
 ```
 
-See [Dashboard Guide](/development/dashboard) for detailed features.
+See [Monitor Guide](/development/monitor) for detailed features.
 
 ---
 
@@ -854,7 +854,7 @@ cd my_first_app
 horus run --release
 
 # Monitor it (new terminal)
-horus dashboard
+horus monitor
 ```
 
 ### Daily Development
@@ -914,7 +914,7 @@ source ~/.bashrc
 
 ```bash
 # Use different port
-horus dashboard 3001
+horus monitor 3001
 
 # Or kill the old process
 lsof -ti:3000 | xargs kill -9
@@ -975,8 +975,8 @@ See **[Troubleshooting & Maintenance](/troubleshooting)** for complete details.
 Now that you know the commands:
 
 1. **[Quick Start](/getting-started/quick-start)** - Build your first app
-2. **[node! Macro](/core-concepts/node-macro)** - Write less code
-3. **[Dashboard Guide](/development/dashboard)** - Master monitoring
-4. **[Examples](/basic-examples)** - See real applications
+2. **[node! Macro](/concepts/node-macro)** - Write less code
+3. **[Monitor Guide](/development/monitor)** - Master monitoring
+4. **[Examples](/rust/examples/basic-examples)** - See real applications
 
 **Having issues?** Check the **[Troubleshooting Guide](/troubleshooting)** for solutions to common problems.

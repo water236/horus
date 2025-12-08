@@ -7,7 +7,10 @@
 //!
 //! ## Available Macros
 //!
-//! - `#[node]` - Generate Node trait implementation with automatic topic registration
+//! - `node!` - Generate Node trait implementation with automatic topic registration
+//! - `message!` - Define message types with serialization traits
+//! - `zero_copy_message!` - Define zero-copy messages with compile-time layout verification
+//! - `fixed_string!` - Generate fixed-size string types for zero-copy messages
 //!
 //! ## Safety
 //!
@@ -18,6 +21,7 @@ use proc_macro::TokenStream;
 
 mod message;
 mod node;
+mod zero_copy;
 
 /// Generate a HORUS node implementation with automatic topic registration.
 ///
@@ -147,5 +151,126 @@ pub fn node(input: TokenStream) -> TokenStream {
 pub fn message(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as message::MessageInput);
     let output = message::generate_message(input);
+    TokenStream::from(output)
+}
+
+/// Define a zero-copy message with compile-time verified layout.
+///
+/// This macro creates message types optimized for high-performance recording:
+/// - **Compile-time size calculation**: Know exact message size at compile time
+/// - **Memory alignment guarantees**: Proper alignment for zero-copy access
+/// - **bytemuck integration**: Automatic Pod + Zeroable for direct memory access
+/// - **Efficient serialization**: Direct memory copy without per-field encoding
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use horus_macros::zero_copy_message;
+///
+/// zero_copy_message! {
+///     /// IMU sensor reading with fixed layout
+///     ImuReading {
+///         timestamp_ns: u64,
+///         accel: [f32; 3],
+///         gyro: [f32; 3],
+///         mag: [f32; 3],
+///         temperature: f32,
+///         status: u8,
+///         _padding: [u8; 3],  // Explicit padding for alignment
+///     }
+/// }
+///
+/// // Use with zero-copy recording
+/// let reading = ImuReading {
+///     timestamp_ns: 1234567890,
+///     accel: [0.0, 9.8, 0.0],
+///     gyro: [0.0, 0.0, 0.0],
+///     mag: [0.3, 0.0, 0.5],
+///     temperature: 25.0,
+///     status: 0x01,
+///     _padding: [0; 3],
+/// };
+///
+/// // Get raw bytes for recording (zero-copy)
+/// let bytes = reading.as_bytes();
+/// assert_eq!(bytes.len(), ImuReading::SIZE);
+///
+/// // Reconstruct from bytes (zero-copy)
+/// let restored = ImuReading::from_bytes(bytes).unwrap();
+/// assert_eq!(restored, reading);
+/// ```
+///
+/// # Generated Code
+///
+/// The macro generates:
+/// - `#[repr(C, packed)]` struct with all fields public
+/// - `Pod` and `Zeroable` unsafe impl for bytemuck
+/// - `Default` impl with zeroed values
+/// - `SIZE` constant for compile-time size
+/// - `as_bytes()` and `from_bytes()` for zero-copy access
+/// - `LogSummary` impl for logging
+/// - `Serialize` impl for JSON/MessagePack compatibility
+///
+/// # Constraints
+///
+/// All fields must be primitive types or fixed-size arrays of primitives:
+/// - Integers: `u8`, `u16`, `u32`, `u64`, `i8`, `i16`, `i32`, `i64`
+/// - Floats: `f32`, `f64`
+/// - Arrays: `[T; N]` where T is a primitive
+/// - Fixed strings: Use `FixedString<N>` (see `fixed_string!` macro)
+///
+/// # Performance
+///
+/// Zero-copy messages are ~10-100x faster than serde-based serialization:
+/// - No allocation during serialization
+/// - Direct memory copy
+/// - Compile-time size known
+/// - Cache-friendly memory layout
+#[proc_macro]
+pub fn zero_copy_message(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as zero_copy::ZeroCopyMessageInput);
+    let output = zero_copy::generate_zero_copy_message(input);
+    TokenStream::from(output)
+}
+
+/// Generate a fixed-size string type for zero-copy messages.
+///
+/// Fixed-size strings have a known compile-time size, making them suitable
+/// for zero-copy message layouts.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use horus_macros::fixed_string;
+///
+/// // Generate FixedString32 type (32 bytes capacity)
+/// fixed_string!(32);
+///
+/// let name = FixedString32::from_str("robot_01");
+/// assert_eq!(name.as_str(), "robot_01");
+///
+/// // Use in zero-copy messages
+/// zero_copy_message! {
+///     RobotInfo {
+///         name: FixedString32,
+///         id: u32,
+///         status: u8,
+///         _padding: [u8; 3],
+///     }
+/// }
+/// ```
+///
+/// # Generated Type
+///
+/// For `fixed_string!(32)`, generates `FixedString32` with:
+/// - 32 bytes data storage
+/// - 1 byte length
+/// - `Pod` and `Zeroable` for bytemuck
+/// - `from_str()`, `as_str()` conversions
+/// - `Debug`, `Display` formatting
+#[proc_macro]
+pub fn fixed_string(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as zero_copy::FixedStringInput);
+    let output = zero_copy::generate_fixed_string(input);
     TokenStream::from(output)
 }

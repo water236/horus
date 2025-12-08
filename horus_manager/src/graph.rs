@@ -77,7 +77,7 @@ pub fn discover_graph_data() -> (Vec<GraphNode>, Vec<GraphEdge>) {
 
     // Discover processes from registry.json (has built-in PID liveness check)
     // Each node has publishers and subscribers lists populated from registry
-    if let Ok(nodes) = super::commands::monitor::discover_nodes() {
+    if let Ok(nodes) = crate::discovery::discover_nodes() {
         for node in &nodes {
             let node_id = format!("process_{}_{}", node.process_id, node.name);
             graph_nodes.push(GraphNode {
@@ -154,7 +154,7 @@ pub fn discover_graph_data() -> (Vec<GraphNode>, Vec<GraphEdge>) {
 
     // Also discover topics from shared memory (for topics that may not be in registry yet)
     // AND infer edges from accessing_processes when registry info is missing
-    if let Ok(topics) = super::commands::monitor::discover_shared_memory() {
+    if let Ok(topics) = crate::discovery::discover_shared_memory() {
         // Build a map of PID -> process node ID for edge inference
         let mut pid_to_node_id: std::collections::HashMap<u32, String> =
             std::collections::HashMap::new();

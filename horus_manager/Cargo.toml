@@ -39,7 +39,6 @@ lazy_static = "1.4"
 eframe = "0.24"
 egui = "0.24"
 egui_extras = "0.24"
-egui_plot = "0.24"
 pulldown-cmark = "0.9"
 uuid = { version = "1.0", features = ["v4", "serde"] }
 walkdir = "2.3"
@@ -59,7 +58,6 @@ syn = { version = "2.0", features = ["full", "visit"] }
 # TUI dependencies
 ratatui = "0.29"
 crossterm = "0.28"
-tui-nodes = "0.9"
 rand = "0.8"
 
 # Web dashboard dependencies

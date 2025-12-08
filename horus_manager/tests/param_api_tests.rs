@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tower::ServiceExt;
 
 // Helper to create test app state
-fn create_test_state() -> Arc<horus_manager::dashboard::AppState> {
+fn create_test_state() -> Arc<horus_manager::monitor::AppState> {
     let params = Arc::new(RuntimeParams::default());
     // Use a dummy password hash for testing (hash of "test")
     let auth_service = Arc::new(
@@ -19,7 +19,7 @@ fn create_test_state() -> Arc<horus_manager::dashboard::AppState> {
             .unwrap_or_else(|_| panic!("Failed to create auth service")),
     );
 
-    Arc::new(horus_manager::dashboard::AppState {
+    Arc::new(horus_manager::monitor::AppState {
         port: 0,
         params,
         auth_service,
@@ -29,33 +29,33 @@ fn create_test_state() -> Arc<horus_manager::dashboard::AppState> {
 }
 
 // Helper to create test router with parameter routes
-fn create_test_router(state: Arc<horus_manager::dashboard::AppState>) -> Router {
+fn create_test_router(state: Arc<horus_manager::monitor::AppState>) -> Router {
     use axum::routing::{delete, get, post};
 
     Router::new()
         .route(
             "/api/params",
-            get(horus_manager::dashboard::params_list_handler),
+            get(horus_manager::monitor::params_list_handler),
         )
         .route(
             "/api/params/:key",
-            get(horus_manager::dashboard::params_get_handler),
+            get(horus_manager::monitor::params_get_handler),
         )
         .route(
             "/api/params/:key",
-            post(horus_manager::dashboard::params_set_handler),
+            post(horus_manager::monitor::params_set_handler),
         )
         .route(
             "/api/params/:key",
-            delete(horus_manager::dashboard::params_delete_handler),
+            delete(horus_manager::monitor::params_delete_handler),
         )
         .route(
             "/api/params/export",
-            post(horus_manager::dashboard::params_export_handler),
+            post(horus_manager::monitor::params_export_handler),
         )
         .route(
             "/api/params/import",
-            post(horus_manager::dashboard::params_import_handler),
+            post(horus_manager::monitor::params_import_handler),
         )
         .with_state(state)
 }

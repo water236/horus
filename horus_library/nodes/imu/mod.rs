@@ -1,4 +1,10 @@
+//! IMU Node - Inertial Measurement Unit sensor node
+//!
+//! This node reads data from IMU sensors and publishes Imu messages.
+//! It uses the driver abstraction layer to support multiple hardware backends.
+
 use crate::Imu;
+use horus_core::driver::{Driver, Sensor};
 use horus_core::error::HorusResult;
 
 // Type alias for cleaner signatures
@@ -11,16 +17,19 @@ use crate::nodes::processor::{
     ClosureProcessor, FilterProcessor, PassThrough, Pipeline, Processor,
 };
 
-#[cfg(any(feature = "mpu6050-imu", feature = "bno055-imu"))]
-use linux_embedded_hal::{Delay, I2cdev};
+// Import driver types
+use crate::drivers::imu::{ImuDriver, ImuDriverBackend, SimulationImuDriver};
 
 #[cfg(feature = "mpu6050-imu")]
-use mpu6050::Mpu6050;
+use crate::drivers::imu::Mpu6050Driver;
 
 #[cfg(feature = "bno055-imu")]
-use bno055::{BNO055OperationMode, Bno055};
+use crate::drivers::imu::Bno055Driver;
 
-/// IMU backend type
+/// IMU backend type (deprecated - use ImuDriverBackend instead)
+///
+/// This enum is kept for backward compatibility. New code should use
+/// `ImuDriverBackend` from `crate::drivers::imu`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ImuBackend {
     Simulation,
@@ -29,25 +38,59 @@ pub enum ImuBackend {
     Icm20948,
 }
 
+impl From<ImuBackend> for ImuDriverBackend {
+    fn from(backend: ImuBackend) -> Self {
+        match backend {
+            ImuBackend::Simulation => ImuDriverBackend::Simulation,
+            #[cfg(feature = "mpu6050-imu")]
+            ImuBackend::Mpu6050 => ImuDriverBackend::Mpu6050,
+            #[cfg(not(feature = "mpu6050-imu"))]
+            ImuBackend::Mpu6050 => ImuDriverBackend::Simulation, // Fallback
+            #[cfg(feature = "bno055-imu")]
+            ImuBackend::Bno055 => ImuDriverBackend::Bno055,
+            #[cfg(not(feature = "bno055-imu"))]
+            ImuBackend::Bno055 => ImuDriverBackend::Simulation, // Fallback
+            ImuBackend::Icm20948 => ImuDriverBackend::Simulation, // Not yet supported
+        }
+    }
+}
+
 /// IMU Node - Inertial Measurement Unit for orientation sensing
 ///
 /// Reads accelerometer, gyroscope, and magnetometer data from IMU sensors
 /// and publishes Imu messages with orientation and motion information.
 ///
-/// Supports multiple hardware backends:
-/// - MPU6050 (6-axis: accel + gyro)
-/// - BNO055 (9-axis: accel + gyro + mag with sensor fusion)
-/// - ICM20948 (9-axis: accel + gyro + mag)
-/// - Simulation mode for testing
+/// # Driver System
 ///
-/// # Hybrid Pattern
+/// This node uses the HORUS driver abstraction layer. Drivers handle all
+/// hardware-specific code, while the node handles HORUS integration (topics,
+/// scheduling, lifecycle).
 ///
-/// This node supports the hybrid pattern for custom processing:
+/// ## Supported Drivers
+///
+/// - `SimulationImuDriver` - Always available, generates synthetic data
+/// - `Mpu6050Driver` - MPU6050 6-axis IMU (requires `mpu6050-imu` feature)
+/// - `Bno055Driver` - BNO055 9-axis IMU with fusion (requires `bno055-imu` feature)
+///
+/// # Example
 ///
 /// ```rust,ignore
+/// use horus_library::nodes::ImuNode;
+/// use horus_library::drivers::SimulationImuDriver;
+///
+/// // Using the default simulation driver
+/// let node = ImuNode::new()?;
+///
+/// // Using a specific driver
+/// let driver = SimulationImuDriver::new();
+/// let node = ImuNode::with_driver("imu", driver)?;
+///
+/// // Using the builder for custom configuration
 /// let node = ImuNode::builder()
+///     .with_topic("custom_imu")
+///     .with_backend(ImuBackend::Simulation)
 ///     .with_filter(|imu| {
-///         // Filter out noisy readings
+///         // Filter out readings with low acceleration
 ///         if imu.linear_acceleration[2].abs() > 0.5 {
 ///             Some(imu)
 ///         } else {
@@ -56,39 +99,29 @@ pub enum ImuBackend {
 ///     })
 ///     .build()?;
 /// ```
-pub struct ImuNode<P = PassThrough<Imu>>
+pub struct ImuNode<D = ImuDriver, P = PassThrough<Imu>>
 where
+    D: Sensor<Output = Imu>,
     P: Processor<Imu>,
 {
     publisher: Hub<Imu>,
 
+    // Driver (handles hardware abstraction)
+    driver: D,
+
     // Configuration
     frame_id: String,
-    sample_rate: f32,
-    backend: ImuBackend,
-    i2c_bus: String,
-    i2c_address: u8,
 
     // State
     is_initialized: bool,
     sample_count: u64,
     last_sample_time: u64,
 
-    // Hardware drivers
-    #[cfg(feature = "mpu6050-imu")]
-    mpu6050: Option<Mpu6050<I2cdev>>,
-
-    #[cfg(feature = "bno055-imu")]
-    bno055: Option<Bno055<I2cdev>>,
-
-    // Simulation state for synthetic data
-    sim_angle: f32,
-
     // Processor for hybrid pattern
     processor: P,
 }
 
-impl ImuNode {
+impl ImuNode<ImuDriver, PassThrough<Imu>> {
     /// Create a new IMU node with default topic "imu" in simulation mode
     pub fn new() -> Result<Self> {
         Self::new_with_backend("imu", ImuBackend::Simulation)
@@ -101,59 +134,73 @@ impl ImuNode {
 
     /// Create a new IMU node with specific hardware backend
     pub fn new_with_backend(topic: &str, backend: ImuBackend) -> Result<Self> {
+        let driver_backend: ImuDriverBackend = backend.into();
+        let driver = ImuDriver::new(driver_backend)?;
+
         Ok(Self {
             publisher: Hub::new(topic)?,
+            driver,
             frame_id: "imu_link".to_string(),
-            sample_rate: 100.0, // 100 Hz default
-            backend,
-            i2c_bus: "/dev/i2c-1".to_string(), // Default for Raspberry Pi
-            i2c_address: 0x68,                 // Default MPU6050 address
             is_initialized: false,
             sample_count: 0,
             last_sample_time: 0,
-            #[cfg(feature = "mpu6050-imu")]
-            mpu6050: None,
-            #[cfg(feature = "bno055-imu")]
-            bno055: None,
-            sim_angle: 0.0,
             processor: PassThrough::new(),
         })
     }
 
     /// Create a builder for custom configuration
-    pub fn builder() -> ImuNodeBuilder<PassThrough<Imu>> {
+    pub fn builder() -> ImuNodeBuilder<ImuDriver, PassThrough<Imu>> {
         ImuNodeBuilder::new()
     }
 }
 
-impl<P> ImuNode<P>
+impl<D> ImuNode<D, PassThrough<Imu>>
 where
+    D: Sensor<Output = Imu>,
+{
+    /// Create a new IMU node with a custom driver
+    ///
+    /// This allows using any driver that implements `Sensor<Output = Imu>`,
+    /// including custom drivers from the marketplace.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use horus_library::nodes::ImuNode;
+    /// use horus_library::drivers::SimulationImuDriver;
+    ///
+    /// let driver = SimulationImuDriver::new();
+    /// let node = ImuNode::with_driver("imu", driver)?;
+    /// ```
+    pub fn with_driver(topic: &str, driver: D) -> Result<Self> {
+        Ok(Self {
+            publisher: Hub::new(topic)?,
+            driver,
+            frame_id: "imu_link".to_string(),
+            is_initialized: false,
+            sample_count: 0,
+            last_sample_time: 0,
+            processor: PassThrough::new(),
+        })
+    }
+}
+
+impl<D, P> ImuNode<D, P>
+where
+    D: Sensor<Output = Imu>,
     P: Processor<Imu>,
 {
-    /// Set hardware backend
-    pub fn set_backend(&mut self, backend: ImuBackend) {
-        self.backend = backend;
-        self.is_initialized = false; // Need to reinitialize
-    }
-
-    /// Set I2C bus and address for hardware IMU
-    pub fn set_i2c_config(&mut self, bus: &str, address: u8) {
-        self.i2c_bus = bus.to_string();
-        self.i2c_address = address;
-        self.is_initialized = false;
-    }
-
     /// Set frame ID for coordinate system
     pub fn set_frame_id(&mut self, frame_id: &str) {
         self.frame_id = frame_id.to_string();
     }
 
-    /// Set IMU sample rate (Hz)
-    pub fn set_sample_rate(&mut self, rate: f32) {
-        self.sample_rate = rate.clamp(1.0, 1000.0);
+    /// Get the driver's sample rate (if available)
+    pub fn get_sample_rate(&self) -> Option<f32> {
+        self.driver.sample_rate()
     }
 
-    /// Get actual sample rate (samples per second)
+    /// Get actual sample rate based on timestamps
     pub fn get_actual_sample_rate(&self) -> f32 {
         if self.sample_count < 2 {
             return 0.0;
@@ -172,191 +219,45 @@ where
         }
     }
 
-    fn initialize_imu(&mut self) -> bool {
-        if self.is_initialized {
-            return true;
-        }
-
-        match self.backend {
-            ImuBackend::Simulation => {
-                // Simulation mode requires no hardware initialization
-                self.is_initialized = true;
-                true
-            }
-            #[cfg(feature = "mpu6050-imu")]
-            ImuBackend::Mpu6050 => {
-                use std::thread;
-                use std::time::Duration;
-
-                match I2cdev::new(&self.i2c_bus) {
-                    Ok(i2c) => {
-                        match Mpu6050::new(i2c) {
-                            Ok(mut mpu) => {
-                                // Initialize the MPU6050
-                                if mpu.init().is_ok() {
-                                    // Small delay for sensor stabilization
-                                    thread::sleep(Duration::from_millis(100));
-                                    self.mpu6050 = Some(mpu);
-                                    self.is_initialized = true;
-                                    true
-                                } else {
-                                    eprintln!("Failed to initialize MPU6050");
-                                    false
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("Failed to create MPU6050: {:?}", e);
-                                false
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to open I2C bus {}: {:?}", self.i2c_bus, e);
-                        false
-                    }
-                }
-            }
-            #[cfg(feature = "bno055-imu")]
-            ImuBackend::Bno055 => {
-                use std::thread;
-                use std::time::Duration;
-
-                match I2cdev::new(&self.i2c_bus) {
-                    Ok(i2c) => {
-                        // Bno055::new returns Bno055 directly (not a Result)
-                        let mut bno = Bno055::new(i2c);
-                        let mut delay = Delay;
-                        // Initialize BNO055 in NDOF mode (full sensor fusion)
-                        if bno.init(&mut delay).is_ok()
-                            && bno.set_mode(BNO055OperationMode::NDOF, &mut delay).is_ok()
-                        {
-                            thread::sleep(Duration::from_millis(100));
-                            self.bno055 = Some(bno);
-                            self.is_initialized = true;
-                            true
-                        } else {
-                            eprintln!("Failed to initialize BNO055");
-                            false
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to open I2C bus {}: {:?}", self.i2c_bus, e);
-                        false
-                    }
-                }
-            }
-            _ => {
-                eprintln!("Unsupported IMU backend: {:?}", self.backend);
-                false
-            }
-        }
+    /// Check if the driver is available
+    pub fn is_driver_available(&self) -> bool {
+        self.driver.is_available()
     }
 
-    fn read_imu_data(&mut self) -> Option<Imu> {
-        let current_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64;
+    /// Get the driver ID
+    pub fn driver_id(&self) -> &str {
+        self.driver.id()
+    }
 
-        match self.backend {
-            ImuBackend::Simulation => {
-                // Generate synthetic IMU data for testing
-                self.sim_angle += 0.01; // Slow rotation
-
-                let mut imu = Imu::new();
-                imu.orientation = [
-                    0.0,
-                    0.0,
-                    self.sim_angle.cos() as f64,
-                    self.sim_angle.sin() as f64,
-                ];
-                imu.angular_velocity = [0.01, 0.0, 0.0];
-                imu.linear_acceleration = [0.0, 0.0, -9.81];
-                imu.timestamp = current_time;
-                Some(imu)
-            }
-            #[cfg(feature = "mpu6050-imu")]
-            ImuBackend::Mpu6050 => {
-                if let Some(ref mut mpu) = self.mpu6050 {
-                    // Read accelerometer and gyroscope data
-                    match (mpu.get_acc(), mpu.get_gyro()) {
-                        (Ok(acc), Ok(gyro)) => {
-                            let mut imu = Imu::new();
-
-                            // MPU6050 provides raw accel/gyro, no orientation
-                            // In m/s^2 (MPU returns g-force, convert to m/s^2)
-                            imu.linear_acceleration = [
-                                acc.x as f64 * 9.81,
-                                acc.y as f64 * 9.81,
-                                acc.z as f64 * 9.81,
-                            ];
-
-                            // In rad/s (MPU returns deg/s, convert to rad/s)
-                            imu.angular_velocity = [
-                                gyro.x as f64 * 0.017453292519943295,
-                                gyro.y as f64 * 0.017453292519943295,
-                                gyro.z as f64 * 0.017453292519943295,
-                            ];
-
-                            // MPU6050 doesn't provide orientation - would need complementary filter
-                            imu.orientation = [0.0, 0.0, 0.0, 1.0]; // Identity quaternion
-                            imu.timestamp = current_time;
-                            Some(imu)
-                        }
-                        _ => {
-                            eprintln!("Failed to read MPU6050 data");
-                            None
-                        }
-                    }
-                } else {
-                    None
-                }
-            }
-            #[cfg(feature = "bno055-imu")]
-            ImuBackend::Bno055 => {
-                if let Some(ref mut bno) = self.bno055 {
-                    // BNO055 provides fused orientation as quaternion
-                    let mut imu = Imu::new();
-
-                    if let Ok(quat) = bno.quaternion() {
-                        // mint::Quaternion has v (Vector3 for x,y,z) and s (scalar for w)
-                        imu.orientation = [
-                            quat.v.x as f64,
-                            quat.v.y as f64,
-                            quat.v.z as f64,
-                            quat.s as f64,
-                        ];
-                    }
-
-                    if let Ok(gyro) = bno.gyro_data() {
-                        imu.angular_velocity = [gyro.x as f64, gyro.y as f64, gyro.z as f64];
-                    }
-
-                    if let Ok(accel) = bno.accel_data() {
-                        imu.linear_acceleration = [accel.x as f64, accel.y as f64, accel.z as f64];
-                    }
-
-                    imu.timestamp = current_time;
-                    Some(imu)
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
+    /// Get the driver name
+    pub fn driver_name(&self) -> &str {
+        self.driver.name()
     }
 }
 
-impl<P> Node for ImuNode<P>
+impl<D, P> Node for ImuNode<D, P>
 where
+    D: Sensor<Output = Imu>,
     P: Processor<Imu>,
 {
     fn name(&self) -> &'static str {
         "ImuNode"
     }
 
-    fn init(&mut self, _ctx: &mut NodeInfo) -> Result<()> {
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        // Initialize the driver
+        self.driver.init()?;
+        self.is_initialized = true;
+
+        // Initialize processor
         self.processor.on_start();
+
+        ctx.log_info(&format!(
+            "ImuNode initialized with driver: {} ({})",
+            self.driver.name(),
+            self.driver.id()
+        ));
+
         Ok(())
     }
 
@@ -366,16 +267,8 @@ where
         // Call processor shutdown hook
         self.processor.on_shutdown();
 
-        // Release hardware IMU resources
-        #[cfg(feature = "mpu6050-imu")]
-        {
-            self.mpu6050 = None;
-        }
-
-        #[cfg(feature = "bno055-imu")]
-        {
-            self.bno055 = None;
-        }
+        // Shutdown driver
+        self.driver.shutdown()?;
 
         self.is_initialized = false;
         ctx.log_info("IMU resources released safely");
@@ -386,54 +279,66 @@ where
         // Call processor tick hook
         self.processor.on_tick();
 
-        // Initialize IMU on first tick
-        if !self.is_initialized && !self.initialize_imu() {
+        // Check if driver has data available
+        if !self.driver.has_data() {
             return;
         }
 
         // Read and publish IMU data (through processor pipeline)
-        if let Some(imu_data) = self.read_imu_data() {
-            self.sample_count += 1;
-            self.last_sample_time = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64;
+        match self.driver.read() {
+            Ok(imu_data) => {
+                self.sample_count += 1;
+                self.last_sample_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
 
-            // Process through pipeline (filter/transform)
-            if let Some(processed) = self.processor.process(imu_data) {
-                let _ = self.publisher.send(processed, &mut None);
+                // Process through pipeline (filter/transform)
+                if let Some(processed) = self.processor.process(imu_data) {
+                    let _ = self.publisher.send(processed, &mut None);
+                }
+            }
+            Err(e) => {
+                // Log error but continue - sensor might recover
+                eprintln!("ImuNode: Failed to read data: {}", e);
             }
         }
     }
 }
 
 /// Builder for ImuNode with custom processor
-pub struct ImuNodeBuilder<P>
+pub struct ImuNodeBuilder<D, P>
 where
+    D: Sensor<Output = Imu>,
     P: Processor<Imu>,
 {
     topic: String,
+    driver: Option<D>,
     backend: ImuBackend,
-    i2c_bus: String,
-    i2c_address: u8,
     processor: P,
 }
 
-impl ImuNodeBuilder<PassThrough<Imu>> {
+impl ImuNodeBuilder<ImuDriver, PassThrough<Imu>> {
     /// Create a new builder with default configuration
     pub fn new() -> Self {
         Self {
             topic: "imu".to_string(),
+            driver: None,
             backend: ImuBackend::Simulation,
-            i2c_bus: "/dev/i2c-1".to_string(),
-            i2c_address: 0x68,
             processor: PassThrough::new(),
         }
     }
 }
 
-impl<P> ImuNodeBuilder<P>
+impl Default for ImuNodeBuilder<ImuDriver, PassThrough<Imu>> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<D, P> ImuNodeBuilder<D, P>
 where
+    D: Sensor<Output = Imu>,
     P: Processor<Imu>,
 {
     /// Set topic name
@@ -442,93 +347,132 @@ where
         self
     }
 
-    /// Set backend
+    /// Set backend (creates appropriate driver on build)
     pub fn with_backend(mut self, backend: ImuBackend) -> Self {
         self.backend = backend;
         self
     }
 
-    /// Set I2C configuration
-    pub fn with_i2c(mut self, bus: &str, address: u8) -> Self {
-        self.i2c_bus = bus.to_string();
-        self.i2c_address = address;
-        self
-    }
-
     /// Set a custom processor
-    pub fn with_processor<P2>(self, processor: P2) -> ImuNodeBuilder<P2>
+    pub fn with_processor<P2>(self, processor: P2) -> ImuNodeBuilder<D, P2>
     where
         P2: Processor<Imu>,
     {
         ImuNodeBuilder {
             topic: self.topic,
+            driver: self.driver,
             backend: self.backend,
-            i2c_bus: self.i2c_bus,
-            i2c_address: self.i2c_address,
             processor,
         }
     }
 
     /// Add a closure-based processor
-    pub fn with_closure<F>(self, f: F) -> ImuNodeBuilder<ClosureProcessor<Imu, Imu, F>>
+    pub fn with_closure<F>(self, f: F) -> ImuNodeBuilder<D, ClosureProcessor<Imu, Imu, F>>
     where
         F: FnMut(Imu) -> Imu + Send + 'static,
     {
         ImuNodeBuilder {
             topic: self.topic,
+            driver: self.driver,
             backend: self.backend,
-            i2c_bus: self.i2c_bus,
-            i2c_address: self.i2c_address,
             processor: ClosureProcessor::new(f),
         }
     }
 
     /// Add a filter processor
-    pub fn with_filter<F>(self, f: F) -> ImuNodeBuilder<FilterProcessor<Imu, Imu, F>>
+    pub fn with_filter<F>(self, f: F) -> ImuNodeBuilder<D, FilterProcessor<Imu, Imu, F>>
     where
         F: FnMut(Imu) -> Option<Imu> + Send + 'static,
     {
         ImuNodeBuilder {
             topic: self.topic,
+            driver: self.driver,
             backend: self.backend,
-            i2c_bus: self.i2c_bus,
-            i2c_address: self.i2c_address,
             processor: FilterProcessor::new(f),
         }
     }
 
     /// Chain another processor
-    pub fn pipe<P2>(self, next: P2) -> ImuNodeBuilder<Pipeline<Imu, Imu, Imu, P, P2>>
+    pub fn pipe<P2>(self, next: P2) -> ImuNodeBuilder<D, Pipeline<Imu, Imu, Imu, P, P2>>
     where
         P2: Processor<Imu, Imu>,
     {
         ImuNodeBuilder {
             topic: self.topic,
+            driver: self.driver,
             backend: self.backend,
-            i2c_bus: self.i2c_bus,
-            i2c_address: self.i2c_address,
             processor: Pipeline::new(self.processor, next),
         }
     }
+}
 
-    /// Build the node
-    pub fn build(self) -> Result<ImuNode<P>> {
+impl<P> ImuNodeBuilder<ImuDriver, P>
+where
+    P: Processor<Imu>,
+{
+    /// Build the node with ImuDriver (default driver type)
+    pub fn build(self) -> Result<ImuNode<ImuDriver, P>> {
+        let driver_backend: ImuDriverBackend = self.backend.into();
+        let driver = ImuDriver::new(driver_backend)?;
+
         Ok(ImuNode {
             publisher: Hub::new(&self.topic)?,
+            driver,
             frame_id: "imu_link".to_string(),
-            sample_rate: 100.0,
-            backend: self.backend,
-            i2c_bus: self.i2c_bus,
-            i2c_address: self.i2c_address,
             is_initialized: false,
             sample_count: 0,
             last_sample_time: 0,
-            #[cfg(feature = "mpu6050-imu")]
-            mpu6050: None,
-            #[cfg(feature = "bno055-imu")]
-            bno055: None,
-            sim_angle: 0.0,
             processor: self.processor,
         })
     }
 }
+
+// Builder for custom drivers
+impl<D, P> ImuNodeBuilder<D, P>
+where
+    D: Sensor<Output = Imu>,
+    P: Processor<Imu>,
+{
+    /// Set a custom driver
+    pub fn with_driver<D2>(self, driver: D2) -> ImuNodeBuilder<D2, P>
+    where
+        D2: Sensor<Output = Imu>,
+    {
+        ImuNodeBuilder {
+            topic: self.topic,
+            driver: Some(driver),
+            backend: self.backend,
+            processor: self.processor,
+        }
+    }
+
+    /// Build the node with a custom driver (requires driver to be set)
+    pub fn build_with_driver(self) -> Result<ImuNode<D, P>>
+    where
+        D: Default,
+    {
+        let driver = self.driver.unwrap_or_default();
+
+        Ok(ImuNode {
+            publisher: Hub::new(&self.topic)?,
+            driver,
+            frame_id: "imu_link".to_string(),
+            is_initialized: false,
+            sample_count: 0,
+            last_sample_time: 0,
+            processor: self.processor,
+        })
+    }
+}
+
+// Convenience type aliases for common driver types
+/// ImuNode with SimulationImuDriver
+pub type SimulationImuNode<P = PassThrough<Imu>> = ImuNode<SimulationImuDriver, P>;
+
+#[cfg(feature = "mpu6050-imu")]
+/// ImuNode with Mpu6050Driver
+pub type Mpu6050ImuNode<P = PassThrough<Imu>> = ImuNode<Mpu6050Driver, P>;
+
+#[cfg(feature = "bno055-imu")]
+/// ImuNode with Bno055Driver
+pub type Bno055ImuNode<P = PassThrough<Imu>> = ImuNode<Bno055Driver, P>;

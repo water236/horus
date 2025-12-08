@@ -267,7 +267,7 @@ if [ -x "$HORUS_BIN" ]; then
     fi
 
     # Test subcommands help
-    for cmd in run new init check dashboard pkg sim2d sim3d; do
+    for cmd in run new init check monitor pkg sim2d sim3d; do
         if $HORUS_BIN $cmd --help >/dev/null 2>&1; then
             pass "horus $cmd --help"
         else

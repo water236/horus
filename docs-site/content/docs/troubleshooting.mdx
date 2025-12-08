@@ -73,7 +73,7 @@ git stash pop  # Restore your changes
 
 3. **Functionality Tests**
    - Commands work (`--version`, `--help`)
-   - All subcommands accessible (`new`, `run`, `dashboard`, `pkg`, `env`, `auth`, `version`)
+   - All subcommands accessible (`new`, `run`, `monitor`, `pkg`, `env`, `auth`, `version`)
    - **Build verification** (when run in HORUS repo):
      - `cargo check` passes without errors
      - Zero warnings in codebase
@@ -721,16 +721,16 @@ fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
 }
 ```
 
-**3. Use Dashboard to Debug:**
+**3. Use Monitor to Debug:**
 ```bash
 # Terminal 1: Run your app
 horus run
 
-# Terminal 2: Open dashboard
-horus dashboard
+# Terminal 2: Open monitor
+horus monitor
 ```
 
-In dashboard:
+In monitor:
 - **Topics tab**: Shows all active topics and their types
 - **Nodes tab**: Shows which nodes are publishing/subscribing
 - **Metrics tab**: Shows message counts (0 = no messages)
@@ -899,20 +899,20 @@ self.pub_hub.send(Arc::clone(&data), &mut ctx).ok();
 
 ---
 
-### Using Dashboard to Debug
+### Using Monitor to Debug
 
-The dashboard is your best debugging tool for runtime issues.
+The monitor is your best debugging tool for runtime issues.
 
-**Starting the Dashboard:**
+**Starting the Monitor:**
 ```bash
 # Terminal 1: Run your application
 horus run
 
-# Terminal 2: Start dashboard
-horus dashboard
+# Terminal 2: Start monitor
+horus monitor
 ```
 
-**Dashboard Features:**
+**Monitor Features:**
 
 **1. Nodes Tab:**
 - Shows all running nodes
@@ -964,7 +964,7 @@ horus dashboard
 ```bash
 # Problem: Subscriber not receiving messages
 
-# Dashboard shows:
+# Monitor shows:
 # Nodes: SensorNode (Running), DisplayNode (Running)
 # Topics: "sensor_data" (1 pub, 0 sub)  <-- AHA!
 
@@ -978,6 +978,6 @@ horus dashboard
 
 - **[Installation](/getting-started/installation)** - First-time installation guide
 - **[CLI Reference](/development/cli-reference)** - All horus commands
-- **[Examples](/basic-examples)** - Working code examples
+- **[Examples](/rust/examples/basic-examples)** - Working code examples
 - **[Performance](/performance/performance)** - Optimization tips
 - **[Testing](/development/testing)** - Test your nodes to prevent runtime errors

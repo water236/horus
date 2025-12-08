@@ -73,7 +73,7 @@ pub struct FaultConfig {
     pub circuit_timeout_ms: u64,
     /// Enable automatic node restart
     pub auto_restart: bool,
-    /// Enable redundancy (N-version programming)
+    /// Redundancy factor (reserved - use RedundancyManager directly in nodes)
     pub redundancy_factor: u32,
     /// Checkpointing frequency (0 = disabled)
     pub checkpoint_interval_ms: u64,
@@ -140,7 +140,108 @@ pub struct MonitoringConfig {
     pub black_box_size_mb: usize,
 }
 
+/// Recording configuration for record/replay system
+#[derive(Debug, Clone)]
+pub struct RecordingConfigYaml {
+    /// Enable recording when scheduler starts
+    pub enabled: bool,
+    /// Session name for recordings (auto-generated if None)
+    pub session_name: Option<String>,
+    /// Enable zstd compression for recordings
+    pub compress: bool,
+    /// Recording interval in ticks (1 = every tick)
+    pub interval: u32,
+    /// Base directory for recordings (default: ~/.horus/recordings)
+    pub output_dir: Option<String>,
+    /// Maximum recording size in MB (0 = unlimited)
+    pub max_size_mb: usize,
+    /// Nodes to record (empty = all nodes)
+    pub include_nodes: Vec<String>,
+    /// Nodes to exclude from recording
+    pub exclude_nodes: Vec<String>,
+    /// Record input values
+    pub record_inputs: bool,
+    /// Record output values
+    pub record_outputs: bool,
+    /// Record timing information
+    pub record_timing: bool,
+}
+
+impl Default for RecordingConfigYaml {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            session_name: None,
+            compress: true,
+            interval: 1,
+            output_dir: None,
+            max_size_mb: 0,
+            include_nodes: vec![],
+            exclude_nodes: vec![],
+            record_inputs: true,
+            record_outputs: true,
+            record_timing: true,
+        }
+    }
+}
+
+impl RecordingConfigYaml {
+    /// Create a recording config that records everything
+    pub fn full() -> Self {
+        Self {
+            enabled: true,
+            session_name: None,
+            compress: true,
+            interval: 1,
+            output_dir: None,
+            max_size_mb: 0,
+            include_nodes: vec![],
+            exclude_nodes: vec![],
+            record_inputs: true,
+            record_outputs: true,
+            record_timing: true,
+        }
+    }
+
+    /// Create a recording config optimized for debugging
+    pub fn debug() -> Self {
+        Self {
+            enabled: true,
+            session_name: Some("debug".to_string()),
+            compress: false, // Faster without compression
+            interval: 1,
+            output_dir: None,
+            max_size_mb: 100, // Limit size for debugging
+            include_nodes: vec![],
+            exclude_nodes: vec![],
+            record_inputs: true,
+            record_outputs: true,
+            record_timing: true,
+        }
+    }
+
+    /// Create a minimal recording config (outputs only)
+    pub fn minimal() -> Self {
+        Self {
+            enabled: true,
+            session_name: None,
+            compress: true,
+            interval: 10, // Every 10 ticks
+            output_dir: None,
+            max_size_mb: 50,
+            include_nodes: vec![],
+            exclude_nodes: vec![],
+            record_inputs: false,
+            record_outputs: true,
+            record_timing: false,
+        }
+    }
+}
+
 /// Robot-specific presets
+///
+/// Note: Only presets with actual constructor functions are listed.
+/// Use `SchedulerConfig::standard()`, `safety_critical()`, etc.
 #[derive(Debug, Clone, Copy)]
 pub enum RobotPreset {
     /// Standard industrial robot
@@ -151,22 +252,92 @@ pub enum RobotPreset {
     HardRealTime,
     /// High-performance racing/competition
     HighPerformance,
-    /// Educational/research platform
-    Educational,
-    /// Mobile/field robot
-    Mobile,
-    /// Underwater/marine robot
-    Underwater,
-    /// Space/satellite robot
+    /// Space/satellite robot (with redundancy + checkpointing)
     Space,
-    /// Swarm robotics
+    /// Swarm robotics (parallel execution)
     Swarm,
-    /// Soft robotics
+    /// Soft robotics (slower tick rate for soft materials)
     SoftRobotics,
     /// Quantum-assisted robotics
     Quantum,
+    /// Educational/learning robots
+    Educational,
+    /// Mobile ground robots
+    Mobile,
+    /// Underwater/marine robots
+    Underwater,
     /// Custom configuration
     Custom,
+}
+
+/// Deterministic execution configuration for copper-rs level guarantees
+///
+/// This enables strict topology validation and deterministic execution order,
+/// providing guarantees similar to compile-time scheduled systems.
+#[derive(Debug, Clone)]
+pub struct DeterministicConfig {
+    /// Enforce strict topology - reject undeclared topics at runtime
+    pub strict_topology: bool,
+
+    /// Wait for all declared connections before first tick
+    pub startup_barrier: bool,
+
+    /// Startup barrier timeout in milliseconds (fail if not all connected)
+    pub barrier_timeout_ms: u64,
+
+    /// Deterministic RNG seed for reproducible randomness
+    pub rng_seed: Option<u64>,
+
+    /// Reject dynamic node addition after startup
+    pub freeze_topology_after_start: bool,
+
+    /// Validate all topic producers have consumers (and vice versa)
+    pub require_complete_connections: bool,
+
+    /// Static execution order (computed once at startup, never changes)
+    pub static_execution_order: bool,
+}
+
+impl Default for DeterministicConfig {
+    fn default() -> Self {
+        Self {
+            strict_topology: false,
+            startup_barrier: false,
+            barrier_timeout_ms: 5000,
+            rng_seed: None,
+            freeze_topology_after_start: false,
+            require_complete_connections: false,
+            static_execution_order: false,
+        }
+    }
+}
+
+impl DeterministicConfig {
+    /// Full determinism - all guarantees enabled (copper-rs level)
+    pub fn strict() -> Self {
+        Self {
+            strict_topology: true,
+            startup_barrier: true,
+            barrier_timeout_ms: 5000,
+            rng_seed: Some(42),
+            freeze_topology_after_start: true,
+            require_complete_connections: true,
+            static_execution_order: true,
+        }
+    }
+
+    /// Partial determinism - execution order only, no topology validation
+    pub fn execution_only() -> Self {
+        Self {
+            strict_topology: false,
+            startup_barrier: false,
+            barrier_timeout_ms: 5000,
+            rng_seed: Some(42),
+            freeze_topology_after_start: false,
+            require_complete_connections: false,
+            static_execution_order: true,
+        }
+    }
 }
 
 /// Complete scheduler configuration for 100% robotics coverage
@@ -197,6 +368,14 @@ pub struct SchedulerConfig {
     /// This HashMap allows ANY custom configuration that might be needed
     /// for exotic robot types (quantum, biological, hybrid, etc.)
     pub custom: HashMap<String, ConfigValue>,
+
+    /// Deterministic execution configuration (copper-rs level guarantees)
+    /// When Some, enables strict topology validation and deterministic execution
+    pub deterministic: Option<DeterministicConfig>,
+
+    /// Recording configuration for record/replay system
+    /// When Some and enabled, scheduler will automatically record all node execution
+    pub recording: Option<RecordingConfigYaml>,
 }
 
 /// Flexible value type for custom configurations
@@ -270,6 +449,73 @@ impl SchedulerConfig {
             },
             preset: RobotPreset::Standard,
             custom: HashMap::new(),
+            deterministic: None,
+            recording: None,
+        }
+    }
+
+    /// Deterministic configuration with copper-rs level guarantees
+    ///
+    /// Enables:
+    /// - Static execution order (computed once at startup)
+    /// - Startup barrier (wait for all nodes to connect)
+    /// - Topology validation (all topics must have producers and consumers)
+    /// - Frozen topology after startup (no dynamic node addition)
+    /// - Deterministic RNG seed for reproducibility
+    ///
+    /// Use this for safety certification, debugging, and exact replay.
+    pub fn deterministic() -> Self {
+        Self {
+            execution: ExecutionMode::Sequential,
+            timing: TimingConfig {
+                global_rate_hz: 1000.0,
+                per_node_rates: false,
+                max_jitter_us: 10,
+                deadline_miss_policy: DeadlineMissPolicy::Panic,
+                time_sync_source: TimeSyncSource::Monotonic,
+            },
+            fault: FaultConfig {
+                circuit_breaker_enabled: false,
+                max_failures: 0,
+                recovery_threshold: 0,
+                circuit_timeout_ms: 0,
+                auto_restart: false,
+                redundancy_factor: 1,
+                checkpoint_interval_ms: 0,
+            },
+            realtime: RealTimeConfig {
+                wcet_enforcement: false,
+                deadline_monitoring: true,
+                watchdog_enabled: false,
+                watchdog_timeout_ms: 1000,
+                safety_monitor: false,
+                max_deadline_misses: 3,
+                priority_inheritance: true,
+                formal_verification: true,
+                memory_locking: false,
+                rt_scheduling_class: false,
+            },
+            resources: ResourceConfig {
+                cpu_cores: None,
+                memory_limit_mb: 0,
+                io_priority: 4,
+                numa_aware: false,
+                gpu_devices: vec![],
+                power_management: false,
+                power_budget_watts: 0,
+            },
+            monitoring: MonitoringConfig {
+                profiling_enabled: false, // No profiling overhead
+                tracing_enabled: true,    // Full audit trail
+                metrics_interval_ms: 100,
+                telemetry_endpoint: None,
+                black_box_enabled: true,
+                black_box_size_mb: 100,
+            },
+            preset: RobotPreset::Custom,
+            custom: HashMap::new(),
+            deterministic: Some(DeterministicConfig::strict()),
+            recording: Some(RecordingConfigYaml::full()), // Deterministic mode should record for replay
         }
     }
 
@@ -324,6 +570,8 @@ impl SchedulerConfig {
             },
             preset: RobotPreset::SafetyCritical,
             custom: HashMap::new(),
+            deterministic: Some(DeterministicConfig::strict()), // Safety-critical needs determinism
+            recording: Some(RecordingConfigYaml::full()),       // Full recording for audit trail
         }
     }
 
@@ -378,6 +626,8 @@ impl SchedulerConfig {
             },
             preset: RobotPreset::HighPerformance,
             custom: HashMap::new(),
+            deterministic: None, // Performance over determinism
+            recording: None,     // No recording overhead in high-performance mode
         }
     }
 
@@ -465,38 +715,6 @@ impl SchedulerConfig {
         config
     }
 
-    /// Quantum-assisted robotics configuration
-    pub fn quantum() -> Self {
-        let mut config = Self::standard();
-        config.preset = RobotPreset::Quantum;
-
-        // Custom quantum settings
-        config.custom.insert(
-            "quantum_backend".to_string(),
-            ConfigValue::String("simulator".to_string()),
-        );
-        config
-            .custom
-            .insert("qubit_count".to_string(), ConfigValue::Integer(20));
-        config.custom.insert(
-            "quantum_algorithm".to_string(),
-            ConfigValue::String("vqe".to_string()),
-        );
-        config.custom.insert(
-            "error_correction".to_string(),
-            ConfigValue::String("surface_code".to_string()),
-        );
-        config
-            .custom
-            .insert("coherence_time_us".to_string(), ConfigValue::Integer(100));
-        config.custom.insert(
-            "quantum_classical_ratio".to_string(),
-            ConfigValue::Float(0.1),
-        );
-
-        config
-    }
-
     /// Hard real-time configuration for surgical robots, CNC machines
     ///
     /// Optimized for <20μs latency and <5μs jitter
@@ -550,6 +768,12 @@ impl SchedulerConfig {
         config.monitoring.profiling_enabled = false; // Disable profiling in production RT
         config.monitoring.black_box_enabled = true; // But enable black box for forensics
         config.monitoring.black_box_size_mb = 100;
+
+        // Hard real-time needs deterministic execution
+        config.deterministic = Some(DeterministicConfig::execution_only());
+
+        // Enable recording for forensics and debugging
+        config.recording = Some(RecordingConfigYaml::minimal());
 
         config
     }

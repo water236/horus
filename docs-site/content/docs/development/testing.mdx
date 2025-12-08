@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn test_sensor_init_lifecycle() {
         let mut sensor = TemperatureSensor::new().unwrap();
-        let mut ctx = NodeInfo::new("TemperatureSensor", true);
+        let mut ctx = NodeInfo::new("TemperatureSensor".to_string(), true);
 
         // Test init() method
         let result = sensor.init(&mut ctx);
@@ -135,7 +135,7 @@ mod tests {
     #[test]
     fn test_sensor_shutdown() {
         let mut sensor = TemperatureSensor::new().unwrap();
-        let mut ctx = NodeInfo::new("TemperatureSensor", true);
+        let mut ctx = NodeInfo::new("TemperatureSensor".to_string(), true);
 
         // Test shutdown() method
         let result = sensor.shutdown(&mut ctx);
@@ -179,7 +179,7 @@ fn test_node_creation() {
 #[test]
 fn test_init() {
     let mut node = MyNode::new().unwrap();
-    let mut ctx = NodeInfo::new("MyNode", true);
+    let mut ctx = NodeInfo::new("MyNode".to_string(), true);
     assert!(node.init(&mut ctx).is_ok());
 }
 ```
@@ -200,7 +200,7 @@ fn test_tick_logic() {
 #[test]
 fn test_shutdown() {
     let mut node = MyNode::new().unwrap();
-    let mut ctx = NodeInfo::new("MyNode", true);
+    let mut ctx = NodeInfo::new("MyNode".to_string(), true);
     assert!(node.shutdown(&mut ctx).is_ok());
 }
 ```
@@ -768,7 +768,7 @@ thread::sleep(Duration::from_millis(10));
 
 ## Next Steps
 
-- **[Examples](/basic-examples)** - See complete tested applications
-- **[Core Concepts - Nodes](/core-concepts/core-concepts-nodes)** - Understand node lifecycle
-- **[Dashboard](/development/dashboard)** - Debug with visual monitoring
+- **[Examples](/rust/examples/basic-examples)** - See complete tested applications
+- **[Core Concepts - Nodes](/concepts/core-concepts-nodes)** - Understand node lifecycle
+- **[Monitor](/development/monitor)** - Debug with visual monitoring
 - **[Troubleshooting](/troubleshooting)** - Fix common runtime issues

@@ -43,15 +43,30 @@ pub mod checkpoint;
 pub mod redundancy;
 pub mod telemetry;
 
+// AI-powered debugging
+pub mod ai_debug;
+
 // Record/Replay system
 pub mod record_replay;
+
+// Zero-copy high-performance recording
+pub mod zero_copy_recording;
+
+// Deterministic execution
+pub mod deterministic;
+
+// Distributed multi-process/robot recording
+pub mod distributed_recording;
+
+// Cloud storage infrastructure
+pub mod cloud_recording;
 
 // Expose async_io module for AsyncNode
 pub mod async_io {
     pub use super::executors::async_io::AsyncNode;
 }
 
-pub use config::{ConfigValue, ExecutionMode, RobotPreset, SchedulerConfig};
+pub use config::{ConfigValue, ExecutionMode, RecordingConfigYaml, RobotPreset, SchedulerConfig};
 pub use safety_monitor::{SafetyMonitor, SafetyState, SafetyStats, WCETEnforcer, Watchdog};
 pub use scheduler::Scheduler;
 
@@ -69,8 +84,36 @@ pub use telemetry::{TelemetryEndpoint, TelemetryManager};
 
 // Re-export record/replay
 pub use record_replay::{
-    NodeRecorder, NodeRecording, NodeReplayer, NodeTickSnapshot, RecordingConfig, RecordingManager,
+    compress_data,
+    decompress_data,
+    diff_recordings,
+    load_recording_compressed,
+    save_recording_compressed,
+    AutoRecordConfig,
+    AutoRecordTrigger,
+    // Auto-recording
+    AutoRecorder,
+    Breakpoint,
+    BreakpointCondition,
+    DebugEvent,
+    DebugSessionState,
+    DebuggerState,
+    NodeRecorder,
+    NodeRecording,
+    NodeReplayer,
+    NodeTickSnapshot,
+    RecordingConfig,
+    RecordingDiff,
+    RecordingManager,
+    // Advanced debugging
+    ReplayDebugger,
+    ReplayMode,
+    ReplayNode,
     SchedulerRecording,
+    TriggerCondition,
+    WatchExpression,
+    WatchType,
+    WatchValue,
 };
 
 // Re-export offline profiling (deterministic alternative to learning phase)
@@ -79,12 +122,52 @@ pub use intelligence::{
 };
 
 // Re-export executors
-pub use executors::{
-    AsyncIOExecutor, AsyncResult, BackgroundExecutor, IsolatedExecutor, ParallelExecutor,
-};
+pub use executors::{AsyncIOExecutor, AsyncResult, BackgroundExecutor, ParallelExecutor};
 
 // Re-export fault tolerance
 pub use fault_tolerance::{CircuitBreaker, CircuitState};
 
 // Re-export JIT compiler
 pub use jit::JITCompiler;
+
+// Re-export zero-copy recording
+pub use zero_copy_recording::{
+    DataFileHeader, EntryData, EntryHeader, IndexEntry, RecordingMetadata, RecordingStats,
+    StreamingRecorder, TickData, TopicTable, ZeroCopyError, ZeroCopyRecorder, ZeroCopyRecording,
+    ZeroCopyReplayer,
+};
+
+// Re-export deterministic execution
+pub use deterministic::{
+    DeterministicClock,
+    DeterministicConfig,
+    DeterministicScheduler,
+    DivergenceInfo,
+    ExecutionTrace,
+    NodeTimingStats,
+    // WCET timing analysis
+    TimingBounds,
+    TimingStatistics,
+    TimingViolation,
+    TraceEntry,
+    ViolationSeverity,
+};
+
+// Re-export distributed recording
+pub use distributed_recording::{
+    DistributedError, DistributedEvent, DistributedEventType, FleetEvent, FleetEventRef,
+    FleetRecorder, HybridReplayConfig, ProcessRecorder, RecordingCoordinator, RobotRecording,
+    SnapshotResult, VectorClock,
+};
+
+// Re-export AI debug assistant
+pub use ai_debug::{
+    AnalysisContext, AnalysisResult, AnalysisStats, AssistantConfig, DebugAssistant, DetectedIssue,
+    IssueCategory, PatternDetector, Severity, TimelineEvent, TimelineEventType,
+};
+
+// Re-export cloud recording
+pub use cloud_recording::{
+    CloudBackend, CloudConfig, CloudError, CloudProvider, CloudRecordingIndex,
+    CloudRecordingMetadata, CloudUploader, RecordingQuery, UploadProgress, UploadStatus,
+};

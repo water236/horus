@@ -102,6 +102,9 @@ stl_io = "0.7"            # STL loader
 collada = "0.15"          # COLLADA loader
 zip = "2.1"               # USDZ archive support
 
+# USD/USDC/USDZ Support (Pixar's Universal Scene Description)
+openusd = "0.1"           # Pure Rust USD reader (USDA, USDC binary, USDZ)
+
 # Additional Format Support
 regex = "1.10"            # Xacro macro processing
 tempfile = "3.10"         # Temporary file for xacro output

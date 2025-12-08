@@ -7,10 +7,6 @@ pub mod async_io;
 /// Background executor for low-priority node execution
 pub mod background;
 
-/// Isolated executor for process-isolated fault-tolerant execution
-pub mod isolated;
-
 pub use async_io::{AsyncIOExecutor, AsyncResult};
 pub use background::BackgroundExecutor;
-pub use isolated::IsolatedExecutor;
 pub use parallel::ParallelExecutor;

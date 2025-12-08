@@ -389,9 +389,10 @@ pub fn process_undo_system(world: &mut World) {
         };
 
         if can_undo {
-            let mut temp_stack = world.resource_mut::<UndoStack>();
-            let mut stack = std::mem::take(&mut *temp_stack);
-            drop(temp_stack); // Release the borrow
+            let mut stack = {
+                let mut temp_stack = world.resource_mut::<UndoStack>();
+                std::mem::take(&mut *temp_stack)
+            };
 
             stack.undo(world);
 
@@ -422,9 +423,10 @@ pub fn process_redo_system(world: &mut World) {
         };
 
         if can_redo {
-            let mut temp_stack = world.resource_mut::<UndoStack>();
-            let mut stack = std::mem::take(&mut *temp_stack);
-            drop(temp_stack); // Release the borrow
+            let mut stack = {
+                let mut temp_stack = world.resource_mut::<UndoStack>();
+                std::mem::take(&mut *temp_stack)
+            };
 
             stack.redo(world);
 

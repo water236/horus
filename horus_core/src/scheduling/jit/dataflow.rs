@@ -2,10 +2,15 @@ use super::compiler::JITCompiler;
 use crate::core::Node;
 use std::time::Instant;
 
-/// Trait for nodes that can be compiled to dataflow
-/// These must be pure functions with no side effects
-/// Used by example_nodes.rs for JIT demonstration
-#[allow(dead_code)]
+/// Trait for nodes that can describe their computation as a dataflow expression.
+///
+/// Nodes implementing this trait can express their computation as a `DataflowExpr` AST,
+/// which can then be compiled to native code via `JITCompiler::compile_dataflow_expr()`.
+///
+/// This is an optional trait - nodes that don't implement it will use the standard
+/// tick-based execution. Implementing this enables automatic JIT compilation for
+/// deterministic computations.
+#[allow(dead_code)] // Public API - implemented by user nodes, not used internally
 pub trait DataflowNode: Node {
     /// Get the dataflow computation as a simple expression
     /// Returns None if too complex for JIT
@@ -22,7 +27,28 @@ pub trait DataflowNode: Node {
     }
 }
 
-/// Simple expression types that can be JIT compiled
+/// Simple expression AST for describing node computations.
+///
+/// Can be compiled to native code via `JITCompiler::compile_dataflow_expr()`.
+///
+/// # Example
+/// ```ignore
+/// use horus_core::scheduling::jit::{DataflowExpr, BinaryOp, JITCompiler};
+///
+/// // Build AST: input * 3 + 7
+/// let expr = DataflowExpr::BinOp {
+///     op: BinaryOp::Add,
+///     left: Box::new(DataflowExpr::BinOp {
+///         op: BinaryOp::Mul,
+///         left: Box::new(DataflowExpr::Input("x".into())),
+///         right: Box::new(DataflowExpr::Const(3)),
+///     }),
+///     right: Box::new(DataflowExpr::Const(7)),
+/// };
+///
+/// let mut compiler = JITCompiler::new()?;
+/// let func_ptr = compiler.compile_dataflow_expr("my_func", &expr)?;
+/// ```
 #[derive(Debug, Clone)]
 pub enum DataflowExpr {
     /// Constant value
@@ -45,6 +71,7 @@ pub enum DataflowExpr {
     },
 }
 
+/// Binary operations for dataflow expressions
 #[derive(Debug, Clone, Copy)]
 pub enum BinaryOp {
     Add,
@@ -57,6 +84,7 @@ pub enum BinaryOp {
     Xor,
 }
 
+/// Unary operations for dataflow expressions
 #[derive(Debug, Clone, Copy)]
 pub enum UnaryOp {
     Neg,
@@ -113,22 +141,6 @@ impl CompiledDataflow {
 
         Ok(Self {
             name: name.to_string(),
-            func_ptr,
-            exec_count: 0,
-            total_ns: 0,
-        })
-    }
-
-    /// Create and compile a new dataflow from an expression
-    pub fn compile(name: String, _expr: DataflowExpr) -> Result<Self, String> {
-        let mut compiler = JITCompiler::new()?;
-
-        // For now, compile a simple test function
-        // In a real implementation, we'd translate the expr to Cranelift IR
-        let func_ptr = compiler.compile_arithmetic_node(&name, 2, 1)?;
-
-        Ok(Self {
-            name,
             func_ptr,
             exec_count: 0,
             total_ns: 0,

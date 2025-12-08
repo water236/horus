@@ -156,7 +156,7 @@ test:
 **Not Yet Automated** (require manual testing or external services):
 - `horus auth` commands (needs GitHub OAuth)
 - `horus publish` (needs registry backend auth)
-- `horus dashboard` (needs UI testing)
+- `horus monitor` (needs UI testing)
 - Multi-node runtime communication
 
 ## Test Maintenance

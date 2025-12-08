@@ -4,10 +4,15 @@
 //! from URDF files or built-in presets.
 
 use bevy::prelude::*;
+use bevy::render::mesh::Mesh;
 use bevy_egui::{egui, EguiContexts};
 use std::path::PathBuf;
 
+use super::scene_manager::SceneManagerState;
 use super::EditorState;
+use crate::hframe::HFrameTree;
+use crate::physics::world::PhysicsWorld;
+use crate::robot::urdf_loader::URDFLoader;
 
 /// Resource to track robot browser state
 #[derive(Resource)]
@@ -64,7 +69,60 @@ pub struct RobotPreset {
 }
 
 /// List of built-in robot presets
+///
+/// The "Bundled" category contains robots with URDFs included in sim3d's assets directory.
+/// Other categories reference external ROS package paths that require separate installation.
 pub const ROBOT_PRESETS: &[RobotPreset] = &[
+    // === BUNDLED ROBOTS (included with sim3d) ===
+    RobotPreset {
+        name: "TurtleBot3 Burger (Bundled)",
+        description: "Differential drive robot - INCLUDED with sim3d",
+        category: "Bundled",
+        urdf_package: "assets/robots/turtlebot3",
+        urdf_path: "burger.urdf",
+        default_height: 0.1,
+    },
+    RobotPreset {
+        name: "UR5e (Bundled)",
+        description: "Universal Robots 5kg arm - INCLUDED with sim3d",
+        category: "Bundled",
+        urdf_package: "assets/robots/ur5e",
+        urdf_path: "ur5e.urdf",
+        default_height: 0.0,
+    },
+    RobotPreset {
+        name: "Franka Panda (Bundled)",
+        description: "7-DOF collaborative arm - INCLUDED with sim3d",
+        category: "Bundled",
+        urdf_package: "assets/robots/panda",
+        urdf_path: "panda.urdf",
+        default_height: 0.0,
+    },
+    RobotPreset {
+        name: "Fetch (Bundled)",
+        description: "Mobile manipulator with 7-DOF arm - INCLUDED with sim3d",
+        category: "Bundled",
+        urdf_package: "assets/robots/fetch",
+        urdf_path: "fetch.urdf",
+        default_height: 0.1,
+    },
+    RobotPreset {
+        name: "HSR (Bundled)",
+        description: "Toyota Human Support Robot - INCLUDED with sim3d",
+        category: "Bundled",
+        urdf_package: "assets/robots/hsr",
+        urdf_path: "hsr.urdf",
+        default_height: 0.1,
+    },
+    RobotPreset {
+        name: "Quadcopter (Bundled)",
+        description: "250mm X-configuration UAV - INCLUDED with sim3d",
+        category: "Bundled",
+        urdf_package: "assets/robots/quadcopter",
+        urdf_path: "quadcopter.urdf",
+        default_height: 0.5,
+    },
+    // === EXTERNAL ROBOTS (require ROS packages) ===
     RobotPreset {
         name: "TurtleBot3 Burger",
         description: "Small differential drive robot for education and research",
@@ -155,19 +213,12 @@ pub struct LoadRobotEvent {
     pub position: Vec3,
 }
 
-/// System to show robot browser button in spawn palette
-/// Note: This is a placeholder - the actual button is integrated into spawn_palette.rs
-#[allow(dead_code)]
-pub fn robot_button_system(
-    _contexts: EguiContexts,
-    _browser_state: ResMut<RobotBrowserState>,
-    _state: Res<EditorState>,
-) {
-    // This is a placeholder system
-    // The actual "Load Robot" button is integrated into spawn_palette.rs
-}
-
 /// System to show robot browser window
+///
+/// Opens with Ctrl+R shortcut. Provides tabs for:
+/// - Presets: Built-in robot models
+/// - Custom: Load URDF from file
+/// - Recent: Previously loaded robots
 pub fn robot_browser_system(
     mut contexts: EguiContexts,
     mut browser_state: ResMut<RobotBrowserState>,
@@ -249,8 +300,8 @@ fn show_presets_tab(
     browser_state: &mut RobotBrowserState,
     load_events: &mut EventWriter<LoadRobotEvent>,
 ) {
-    // Group presets by category
-    let categories = ["Mobile", "Arm", "Mobile Manipulator", "Legged"];
+    // Group presets by category - "Bundled" shown first (included with sim3d)
+    let categories = ["Bundled", "Mobile", "Arm", "Mobile Manipulator", "Legged"];
 
     egui::ScrollArea::vertical().show(ui, |ui| {
         for category in categories {
@@ -413,6 +464,12 @@ fn show_custom_tab(
 pub fn process_load_robot_system(
     mut load_events: EventReader<LoadRobotEvent>,
     mut browser_state: ResMut<RobotBrowserState>,
+    mut commands: Commands,
+    mut physics_world: ResMut<PhysicsWorld>,
+    mut hframe_tree: ResMut<HFrameTree>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut scene_state: ResMut<SceneManagerState>,
 ) {
     for event in load_events.read() {
         info!(
@@ -420,13 +477,46 @@ pub fn process_load_robot_system(
             event.name, event.urdf_path, event.position
         );
 
-        // TODO: Integrate with actual URDF loader
-        // This would call into robot/urdf_loader.rs
+        // Determine base path from URDF path
+        let urdf_path = PathBuf::from(&event.urdf_path);
+        let base_path = urdf_path
+            .parent()
+            .unwrap_or(&PathBuf::from("."))
+            .to_path_buf();
 
-        browser_state.success_message = Some(format!(
-            "Robot '{}' loaded at position ({:.1}, {:.1}, {:.1})",
-            event.name, event.position.x, event.position.y, event.position.z
-        ));
+        // Create URDF loader with base path for mesh resolution
+        let mut loader = URDFLoader::new().with_base_path(base_path);
+
+        // Try to load the robot
+        match loader.load_at_position(
+            &urdf_path,
+            event.position,
+            Quat::IDENTITY,
+            &mut commands,
+            &mut physics_world,
+            &mut hframe_tree,
+            &mut meshes,
+            &mut materials,
+        ) {
+            Ok(robot_entity) => {
+                browser_state.success_message = Some(format!(
+                    "Robot '{}' loaded successfully at ({:.1}, {:.1}, {:.1})",
+                    event.name, event.position.x, event.position.y, event.position.z
+                ));
+                browser_state.error_message = None;
+                scene_state.mark_changed();
+                info!(
+                    "Successfully spawned robot '{}' as entity {:?}",
+                    event.name, robot_entity
+                );
+            }
+            Err(e) => {
+                let error_msg = format!("Failed to load robot '{}': {}", event.name, e);
+                browser_state.error_message = Some(error_msg.clone());
+                browser_state.success_message = None;
+                error!("{}", error_msg);
+            }
+        }
     }
 }
 
@@ -448,6 +538,7 @@ mod tests {
     #[test]
     fn test_robot_presets() {
         assert!(!ROBOT_PRESETS.is_empty());
+        assert!(ROBOT_PRESETS.len() >= 16); // 6 bundled + 10 external
 
         // Check that all presets have required fields
         for preset in ROBOT_PRESETS {
@@ -456,6 +547,30 @@ mod tests {
             assert!(!preset.category.is_empty());
             assert!(!preset.urdf_package.is_empty());
             assert!(!preset.urdf_path.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_bundled_robots_exist() {
+        // Verify we have bundled robots that don't require external packages
+        let bundled: Vec<_> = ROBOT_PRESETS
+            .iter()
+            .filter(|p| p.category == "Bundled")
+            .collect();
+
+        assert!(
+            bundled.len() >= 3,
+            "Expected at least 3 bundled robots, found {}",
+            bundled.len()
+        );
+
+        // Verify bundled robots use local asset paths
+        for preset in bundled {
+            assert!(
+                preset.urdf_package.starts_with("assets/"),
+                "Bundled robot '{}' should use local assets path",
+                preset.name
+            );
         }
     }
 

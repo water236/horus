@@ -93,7 +93,7 @@ pub mod prelude {
     // Advanced Executors
     // ============================================
     pub use horus_core::scheduling::{
-        AsyncIOExecutor, AsyncResult, BackgroundExecutor, IsolatedExecutor, ParallelExecutor,
+        AsyncIOExecutor, AsyncResult, BackgroundExecutor, ParallelExecutor,
     };
 
     // ============================================
@@ -189,12 +189,15 @@ pub mod prelude {
     // ============================================
     pub use horus_library::nodes::{
         DifferentialDriveNode, EmergencyStopNode, JoystickInputNode, KeyboardInputNode,
-        LocalizationNode, PathPlannerNode, PidControllerNode, SerialNode,
+        LocalizationNode, PathPlannerNode, PidControllerNode,
     };
 
     // ============================================
     // Hardware-specific Nodes (require feature flags)
     // ============================================
+    #[cfg(feature = "serial-hardware")]
+    pub use horus_library::nodes::SerialNode;
+
     #[cfg(feature = "gpio-hardware")]
     pub use horus_library::nodes::{DigitalIONode, EncoderNode, ServoControllerNode};
 

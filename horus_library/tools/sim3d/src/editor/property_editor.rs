@@ -10,6 +10,7 @@ use bevy_egui::{egui, EguiContexts};
 #[allow(unused_imports)]
 use crate::physics::rigid_body::{Damping, Mass, Velocity};
 
+use super::hierarchy::DeleteEntityEvent;
 use super::scene_manager::SceneManagerState;
 use super::selection::Selection;
 use super::EditorState;
@@ -62,7 +63,7 @@ impl Default for EditableVisual {
 pub fn property_editor_panel_system(
     mut contexts: EguiContexts,
     state: Res<EditorState>,
-    selection: Res<Selection>,
+    mut selection: ResMut<Selection>,
     mut scene_state: ResMut<SceneManagerState>,
     mut transforms: Query<&mut Transform>,
     mut physics_query: Query<&mut EditablePhysics>,
@@ -70,6 +71,7 @@ pub fn property_editor_panel_system(
     mut materials: ResMut<Assets<StandardMaterial>>,
     material_handles: Query<&MeshMaterial3d<StandardMaterial>>,
     names: Query<&Name>,
+    mut delete_events: EventWriter<DeleteEntityEvent>,
 ) {
     if !state.enabled || !state.show_inspector {
         return;
@@ -138,7 +140,9 @@ pub fn property_editor_panel_system(
                 }
 
                 if ui.button("Delete").clicked() {
-                    // TODO: Send delete event
+                    delete_events.send(DeleteEntityEvent { entity });
+                    selection.clear();
+                    scene_state.mark_changed();
                     info!("Delete requested for entity {:?}", entity);
                 }
             });

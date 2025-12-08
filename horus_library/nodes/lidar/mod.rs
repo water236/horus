@@ -1,27 +1,32 @@
+//! LiDAR Node - Generic LiDAR interface for obstacle detection and mapping
+//!
+//! This node reads laser scan data from LiDAR sensors and publishes LaserScan messages.
+//! It uses the driver abstraction layer to support multiple hardware backends.
+
 use crate::LaserScan;
+use horus_core::driver::{Driver, Sensor};
 use horus_core::error::HorusResult;
 
 // Type alias for cleaner signatures
 type Result<T> = HorusResult<T>;
 use horus_core::{Hub, Node, NodeInfo};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // Processor imports for hybrid pattern
 use crate::nodes::processor::{
     ClosureProcessor, FilterProcessor, PassThrough, Pipeline, Processor,
 };
 
-// Serial port for hardware LiDAR
-#[cfg(feature = "serial-hardware")]
-use serialport::SerialPort;
+// Import driver types
+use crate::drivers::lidar::{LidarDriver, LidarDriverBackend, SimulationLidarDriver};
 
-// Hardware LiDAR support status:
-// - RPLidar: Disabled due to rplidar_drv crate upstream compilation bug
-//   (unaligned packed struct reference in ultra_capsuled_parser.rs)
-// - YDLIDAR: Supported via serial protocol (X2, X4, T-mini Pro)
-//   Requires 'serial-hardware' feature flag
+#[cfg(feature = "rplidar")]
+use crate::drivers::lidar::RplidarDriver;
 
-/// LiDAR backend type
+/// LiDAR backend type (deprecated - use LidarDriverBackend instead)
+///
+/// This enum is kept for backward compatibility. New code should use
+/// `LidarDriverBackend` from `crate::drivers::lidar`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LidarBackend {
     Simulation,
@@ -33,18 +38,59 @@ pub enum LidarBackend {
     YdlidarTMiniPro,
 }
 
+impl From<LidarBackend> for LidarDriverBackend {
+    fn from(backend: LidarBackend) -> Self {
+        match backend {
+            LidarBackend::Simulation => LidarDriverBackend::Simulation,
+            #[cfg(feature = "rplidar")]
+            LidarBackend::RplidarA1 | LidarBackend::RplidarA2 | LidarBackend::RplidarA3 => {
+                LidarDriverBackend::Rplidar
+            }
+            #[cfg(not(feature = "rplidar"))]
+            LidarBackend::RplidarA1 | LidarBackend::RplidarA2 | LidarBackend::RplidarA3 => {
+                LidarDriverBackend::Simulation
+            }
+            // YDLIDAR not yet supported - fall back to simulation
+            LidarBackend::YdlidarX2 | LidarBackend::YdlidarX4 | LidarBackend::YdlidarTMiniPro => {
+                LidarDriverBackend::Simulation
+            }
+        }
+    }
+}
+
 /// LiDAR Node - Generic LiDAR interface for obstacle detection and mapping
 ///
 /// Captures laser scan data from various LiDAR sensors and publishes LaserScan messages.
-/// Supports multiple hardware backends:
-/// - RPLidar A1/A2/A3 series
-/// - YDLIDAR X2/X4/T-mini Pro series
-/// - Simulation mode for testing
+/// Supports multiple hardware backends through the driver abstraction layer.
 ///
-/// # Hybrid Pattern
+/// # Driver System
+///
+/// This node uses the HORUS driver abstraction layer. Drivers handle all
+/// hardware-specific code, while the node handles HORUS integration (topics,
+/// scheduling, lifecycle).
+///
+/// ## Supported Drivers
+///
+/// - `SimulationLidarDriver` - Always available, generates synthetic scans
+/// - `RplidarDriver` - RPLidar A2/A3 (requires `rplidar` feature)
+///
+/// # Example
 ///
 /// ```rust,ignore
+/// use horus_library::nodes::LidarNode;
+/// use horus_library::drivers::SimulationLidarDriver;
+///
+/// // Using the default simulation driver
+/// let node = LidarNode::new()?;
+///
+/// // Using a specific driver
+/// let driver = SimulationLidarDriver::new();
+/// let node = LidarNode::with_driver("scan", driver)?;
+///
+/// // Using the builder for custom configuration
 /// let node = LidarNode::builder()
+///     .topic("custom_scan")
+///     .with_backend(LidarBackend::Simulation)
 ///     .with_closure(|mut scan| {
 ///         // Apply range filtering
 ///         for r in scan.ranges.iter_mut() {
@@ -54,11 +100,15 @@ pub enum LidarBackend {
 ///     })
 ///     .build()?;
 /// ```
-pub struct LidarNode<P = PassThrough<LaserScan>>
+pub struct LidarNode<D = LidarDriver, P = PassThrough<LaserScan>>
 where
+    D: Sensor<Output = LaserScan>,
     P: Processor<LaserScan>,
 {
     publisher: Hub<LaserScan>,
+
+    // Driver (handles hardware abstraction)
+    driver: D,
 
     // Configuration
     frame_id: String,
@@ -66,17 +116,6 @@ where
     min_range: f32,
     max_range: f32,
     angle_increment: f32,
-    backend: LidarBackend,
-    serial_port_path: String,
-    baud_rate: u32,
-
-    // Hardware serial port (when using YDLIDAR)
-    #[cfg(feature = "serial-hardware")]
-    serial_port: Option<Box<dyn SerialPort>>,
-
-    // YDLIDAR protocol state
-    #[cfg(feature = "serial-hardware")]
-    read_buffer: Vec<u8>,
 
     // State
     is_initialized: bool,
@@ -87,7 +126,7 @@ where
     processor: P,
 }
 
-impl LidarNode {
+impl LidarNode<LidarDriver, PassThrough<LaserScan>> {
     /// Create a new LiDAR node with default topic "scan" in simulation mode
     pub fn new() -> Result<Self> {
         Self::new_with_backend("scan", LidarBackend::Simulation)
@@ -100,36 +139,27 @@ impl LidarNode {
 
     /// Create a new LiDAR node with specific backend
     pub fn new_with_backend(topic: &str, backend: LidarBackend) -> Result<Self> {
-        // Determine baud rate based on backend
-        let baud_rate = match backend {
-            LidarBackend::YdlidarX2 => 115200,
-            LidarBackend::YdlidarX4 => 128000,
-            LidarBackend::YdlidarTMiniPro => 230400,
-            _ => 115200,
+        let driver_backend: LidarDriverBackend = backend.into();
+        let driver = LidarDriver::new(driver_backend)?;
+
+        let max_range = match backend {
+            LidarBackend::RplidarA1 => 12.0,
+            LidarBackend::RplidarA2 => 16.0,
+            LidarBackend::RplidarA3 => 25.0,
+            LidarBackend::YdlidarX2 => 8.0,
+            LidarBackend::YdlidarX4 => 10.0,
+            LidarBackend::YdlidarTMiniPro => 12.0,
+            _ => 30.0,
         };
 
         Ok(Self {
             publisher: Hub::new(topic)?,
+            driver,
             frame_id: "laser_frame".to_string(),
             scan_frequency: 10.0,
             min_range: 0.1,
-            max_range: match backend {
-                LidarBackend::RplidarA1 => 12.0,       // A1: 12m max range
-                LidarBackend::RplidarA2 => 16.0,       // A2: 16m max range
-                LidarBackend::RplidarA3 => 25.0,       // A3: 25m max range
-                LidarBackend::YdlidarX2 => 8.0,        // X2: 8m max range
-                LidarBackend::YdlidarX4 => 10.0,       // X4: 10m max range
-                LidarBackend::YdlidarTMiniPro => 12.0, // T-mini Pro: 12m max range
-                _ => 30.0,
-            },
-            angle_increment: std::f32::consts::PI / 180.0, // 1 degree
-            backend,
-            serial_port_path: "/dev/ttyUSB0".to_string(),
-            baud_rate,
-            #[cfg(feature = "serial-hardware")]
-            serial_port: None,
-            #[cfg(feature = "serial-hardware")]
-            read_buffer: Vec::with_capacity(4096),
+            max_range,
+            angle_increment: std::f32::consts::PI / 180.0,
             is_initialized: false,
             scan_count: 0,
             last_scan_time: 0,
@@ -138,28 +168,51 @@ impl LidarNode {
     }
 
     /// Create a builder for advanced configuration
-    pub fn builder() -> LidarNodeBuilder<PassThrough<LaserScan>> {
+    pub fn builder() -> LidarNodeBuilder<LidarDriver, PassThrough<LaserScan>> {
         LidarNodeBuilder::new()
     }
+}
 
-    /// Set LiDAR backend
-    pub fn set_backend(&mut self, backend: LidarBackend) {
-        self.backend = backend;
-        self.is_initialized = false;
+impl<D> LidarNode<D, PassThrough<LaserScan>>
+where
+    D: Sensor<Output = LaserScan>,
+{
+    /// Create a new LiDAR node with a custom driver
+    ///
+    /// This allows using any driver that implements `Sensor<Output = LaserScan>`,
+    /// including custom drivers from the marketplace.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use horus_library::nodes::LidarNode;
+    /// use horus_library::drivers::SimulationLidarDriver;
+    ///
+    /// let driver = SimulationLidarDriver::new();
+    /// let node = LidarNode::with_driver("scan", driver)?;
+    /// ```
+    pub fn with_driver(topic: &str, driver: D) -> Result<Self> {
+        Ok(Self {
+            publisher: Hub::new(topic)?,
+            driver,
+            frame_id: "laser_frame".to_string(),
+            scan_frequency: 10.0,
+            min_range: 0.1,
+            max_range: 30.0,
+            angle_increment: std::f32::consts::PI / 180.0,
+            is_initialized: false,
+            scan_count: 0,
+            last_scan_time: 0,
+            processor: PassThrough::new(),
+        })
     }
+}
 
-    /// Set serial port for LiDAR
-    pub fn set_serial_port(&mut self, port: &str) {
-        self.serial_port_path = port.to_string();
-        self.is_initialized = false;
-    }
-
-    /// Set baud rate for serial communication
-    pub fn set_baud_rate(&mut self, baud_rate: u32) {
-        self.baud_rate = baud_rate;
-        self.is_initialized = false;
-    }
-
+impl<D, P> LidarNode<D, P>
+where
+    D: Sensor<Output = LaserScan>,
+    P: Processor<LaserScan>,
+{
     /// Set frame ID for coordinate system
     pub fn set_frame_id(&mut self, frame_id: &str) {
         self.frame_id = frame_id.to_string();
@@ -200,376 +253,131 @@ impl LidarNode {
         }
     }
 
-    fn initialize_lidar(&mut self) -> bool {
-        if self.is_initialized {
-            return true;
-        }
-
-        match self.backend {
-            LidarBackend::Simulation => {
-                self.is_initialized = true;
-                true
-            }
-            LidarBackend::RplidarA1 | LidarBackend::RplidarA2 | LidarBackend::RplidarA3 => {
-                eprintln!("RPLidar hardware support is temporarily disabled (upstream crate bug)");
-                eprintln!("Falling back to simulation mode");
-                self.backend = LidarBackend::Simulation;
-                self.is_initialized = true;
-                true
-            }
-            LidarBackend::YdlidarX2 | LidarBackend::YdlidarX4 | LidarBackend::YdlidarTMiniPro => {
-                #[cfg(feature = "serial-hardware")]
-                {
-                    match self.initialize_ydlidar() {
-                        Ok(()) => {
-                            eprintln!(
-                                "YDLIDAR {:?} initialized on {}",
-                                self.backend, self.serial_port_path
-                            );
-                            self.is_initialized = true;
-                            return true;
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to initialize YDLIDAR: {}", e);
-                            eprintln!("Falling back to simulation mode");
-                        }
-                    }
-                }
-
-                #[cfg(not(feature = "serial-hardware"))]
-                {
-                    eprintln!("YDLIDAR support requires 'serial-hardware' feature");
-                    eprintln!("Build with: cargo build --features serial-hardware");
-                }
-
-                self.backend = LidarBackend::Simulation;
-                self.is_initialized = true;
-                true
-            }
-        }
+    /// Get the driver's sample rate (if available)
+    pub fn get_sample_rate(&self) -> Option<f32> {
+        self.driver.sample_rate()
     }
 
-    #[cfg(feature = "serial-hardware")]
-    fn initialize_ydlidar(&mut self) -> std::result::Result<(), String> {
-        use serialport::SerialPortType;
-
-        // Open serial port
-        let port = serialport::new(&self.serial_port_path, self.baud_rate)
-            .timeout(Duration::from_millis(100))
-            .open()
-            .map_err(|e| {
-                format!(
-                    "Failed to open serial port {}: {}",
-                    self.serial_port_path, e
-                )
-            })?;
-
-        self.serial_port = Some(port);
-        self.read_buffer.clear();
-
-        // Send start scan command for YDLIDAR
-        // YDLIDAR protocol: 0xA5 0x60 (start scan)
-        if let Some(ref mut port) = self.serial_port {
-            let start_cmd = [0xA5, 0x60];
-            port.write_all(&start_cmd)
-                .map_err(|e| format!("Failed to send start command: {}", e))?;
-        }
-
-        Ok(())
+    /// Check if the driver is available
+    pub fn is_driver_available(&self) -> bool {
+        self.driver.is_available()
     }
 
-    #[cfg(feature = "serial-hardware")]
-    fn stop_ydlidar(&mut self) {
-        if let Some(ref mut port) = self.serial_port {
-            // Send stop command: 0xA5 0x65
-            let stop_cmd = [0xA5, 0x65];
-            let _ = port.write_all(&stop_cmd);
-        }
-        self.serial_port = None;
+    /// Get the driver ID
+    pub fn driver_id(&self) -> &str {
+        self.driver.id()
     }
 
-    fn generate_scan_data(&mut self) -> Option<Vec<f32>> {
-        match self.backend {
-            LidarBackend::Simulation => {
-                // Generate synthetic scan data for testing
-                let num_points = (2.0 * std::f32::consts::PI / self.angle_increment) as usize;
-                let mut ranges = Vec::with_capacity(num_points);
-
-                for i in 0..num_points {
-                    let angle = i as f32 * self.angle_increment;
-
-                    // Create some obstacles at different distances
-                    let range = if angle.cos() > 0.8 {
-                        2.0 + 0.5 * angle.sin() // Wall-like obstacle
-                    } else if (angle - std::f32::consts::PI / 2.0).abs() < 0.5 {
-                        1.0 // Closer obstacle
-                    } else {
-                        self.max_range // No obstacle detected
-                    };
-
-                    ranges.push(range.min(self.max_range).max(self.min_range));
-                }
-
-                Some(ranges)
-            }
-            // Note: RPLidar hardware support temporarily disabled (rplidar_drv crate has upstream bug)
-            // The backend will have been switched to Simulation in initialize_lidar()
-            LidarBackend::RplidarA1 | LidarBackend::RplidarA2 | LidarBackend::RplidarA3 => {
-                // Fallback to simulation - this branch shouldn't be reached if initialize_lidar ran
-                None
-            }
-            LidarBackend::YdlidarX2 | LidarBackend::YdlidarX4 | LidarBackend::YdlidarTMiniPro => {
-                #[cfg(feature = "serial-hardware")]
-                {
-                    return self.read_ydlidar_scan();
-                }
-
-                #[cfg(not(feature = "serial-hardware"))]
-                {
-                    // This shouldn't be reached - initialize_lidar should have fallen back to simulation
-                    None
-                }
-            }
-        }
-    }
-
-    #[cfg(feature = "serial-hardware")]
-    fn read_ydlidar_scan(&mut self) -> Option<Vec<f32>> {
-        use std::io::Read;
-
-        let port = self.serial_port.as_mut()?;
-
-        // Read available data into buffer
-        let mut temp_buf = [0u8; 512];
-        match port.read(&mut temp_buf) {
-            Ok(n) if n > 0 => {
-                self.read_buffer.extend_from_slice(&temp_buf[..n]);
-            }
-            _ => {}
-        }
-
-        // YDLIDAR packet format:
-        // Header: 0xAA 0x55
-        // CT: 1 byte (scan type)
-        // LSN: 1 byte (sample quantity)
-        // FSA: 2 bytes (start angle)
-        // LSA: 2 bytes (end angle)
-        // CS: 2 bytes (checksum)
-        // Data: LSN * 2 bytes (distance samples)
-
-        // Find packet header
-        let header_pos = self
-            .read_buffer
-            .windows(2)
-            .position(|w| w == [0xAA, 0x55])?;
-
-        // Need at least 10 bytes for header + minimal data
-        if self.read_buffer.len() < header_pos + 10 {
-            return None;
-        }
-
-        // Parse packet
-        let _ct = self.read_buffer[header_pos + 2];
-        let lsn = self.read_buffer[header_pos + 3] as usize;
-        let fsa = u16::from_le_bytes([
-            self.read_buffer[header_pos + 4],
-            self.read_buffer[header_pos + 5],
-        ]);
-        let lsa = u16::from_le_bytes([
-            self.read_buffer[header_pos + 6],
-            self.read_buffer[header_pos + 7],
-        ]);
-
-        // Check if we have the full packet
-        let packet_len = 10 + lsn * 2;
-        if self.read_buffer.len() < header_pos + packet_len {
-            return None;
-        }
-
-        // Parse distance samples
-        let mut ranges = vec![self.max_range; 360];
-        let start_angle = (fsa >> 1) as f32 / 64.0;
-        let end_angle = (lsa >> 1) as f32 / 64.0;
-
-        let angle_step = if lsn > 1 {
-            let diff = if end_angle > start_angle {
-                end_angle - start_angle
-            } else {
-                360.0 - start_angle + end_angle
-            };
-            diff / (lsn - 1) as f32
-        } else {
-            0.0
-        };
-
-        for i in 0..lsn {
-            let data_offset = header_pos + 10 + i * 2;
-            if data_offset + 1 < self.read_buffer.len() {
-                let distance_raw = u16::from_le_bytes([
-                    self.read_buffer[data_offset],
-                    self.read_buffer[data_offset + 1],
-                ]);
-
-                // Convert to meters (YDLIDAR uses mm)
-                let distance = distance_raw as f32 / 1000.0;
-
-                // Calculate angle index
-                let angle = start_angle + i as f32 * angle_step;
-                let angle_idx = (angle % 360.0) as usize;
-
-                if angle_idx < 360 && distance > self.min_range && distance < self.max_range {
-                    ranges[angle_idx] = distance;
-                }
-            }
-        }
-
-        // Remove processed data from buffer
-        self.read_buffer.drain(..header_pos + packet_len);
-
-        Some(ranges)
-    }
-
-    fn publish_scan(&self, ranges: Vec<f32>) {
-        let current_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64;
-
-        let mut scan = LaserScan::new();
-        scan.angle_min = 0.0;
-        scan.angle_max = 2.0 * std::f32::consts::PI;
-        scan.angle_increment = self.angle_increment;
-        scan.time_increment = 1.0 / self.scan_frequency;
-        scan.scan_time = 0.1;
-        scan.range_min = self.min_range;
-        scan.range_max = self.max_range;
-
-        // Copy ranges to fixed array
-        for (i, &range) in ranges.iter().take(360).enumerate() {
-            scan.ranges[i] = range;
-        }
-
-        scan.timestamp = current_time;
-
-        let _ = self.publisher.send(scan, &mut None);
+    /// Get the driver name
+    pub fn driver_name(&self) -> &str {
+        self.driver.name()
     }
 }
 
-impl<P> Node for LidarNode<P>
+impl<D, P> Node for LidarNode<D, P>
 where
+    D: Sensor<Output = LaserScan>,
     P: Processor<LaserScan>,
 {
     fn name(&self) -> &'static str {
         "LidarNode"
     }
 
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        // Initialize the driver
+        self.driver.init()?;
+        self.is_initialized = true;
+
+        // Initialize processor
+        self.processor.on_start();
+
+        ctx.log_info(&format!(
+            "LidarNode initialized with driver: {} ({})",
+            self.driver.name(),
+            self.driver.id()
+        ));
+
+        Ok(())
+    }
+
     fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
-        self.processor.on_shutdown();
         ctx.log_info("LidarNode shutting down - stopping LiDAR sensor");
 
-        // Stop LiDAR scanning
+        // Call processor shutdown hook
+        self.processor.on_shutdown();
+
+        // Shutdown driver
+        self.driver.shutdown()?;
+
         self.is_initialized = false;
-
-        // Stop hardware LiDAR if running
-        #[cfg(feature = "serial-hardware")]
-        {
-            match self.backend {
-                LidarBackend::YdlidarX2
-                | LidarBackend::YdlidarX4
-                | LidarBackend::YdlidarTMiniPro => {
-                    self.stop_ydlidar();
-                }
-                _ => {}
-            }
-        }
-
         ctx.log_info("LiDAR sensor stopped safely");
         Ok(())
     }
 
-    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
-        self.processor.on_start();
-        ctx.log_info("LidarNode initialized");
-        Ok(())
-    }
-
     fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+        // Call processor tick hook
         self.processor.on_tick();
 
-        // Initialize LiDAR on first tick
-        if !self.is_initialized && !self.initialize_lidar() {
-            return; // Skip if initialization failed
+        // Check if driver has data available
+        if !self.driver.has_data() {
+            return;
         }
 
-        // Generate and publish scan data
-        if let Some(ranges) = self.generate_scan_data() {
-            self.scan_count += 1;
-            self.last_scan_time = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64;
+        // Read and publish scan data (through processor pipeline)
+        match self.driver.read() {
+            Ok(scan) => {
+                self.scan_count += 1;
+                self.last_scan_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
 
-            // Build scan message
-            let current_time = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos() as u64;
-
-            let mut scan = LaserScan::new();
-            scan.angle_min = 0.0;
-            scan.angle_max = 2.0 * std::f32::consts::PI;
-            scan.angle_increment = self.angle_increment;
-            scan.time_increment = 1.0 / self.scan_frequency;
-            scan.scan_time = 0.1;
-            scan.range_min = self.min_range;
-            scan.range_max = self.max_range;
-
-            for (i, &range) in ranges.iter().take(360).enumerate() {
-                scan.ranges[i] = range;
+                // Process through pipeline (filter/transform)
+                if let Some(processed) = self.processor.process(scan) {
+                    let _ = self.publisher.send(processed, &mut None);
+                }
             }
-
-            scan.timestamp = current_time;
-
-            // Process through pipeline and publish
-            if let Some(processed) = self.processor.process(scan) {
-                let _ = self.publisher.send(processed, &mut None);
+            Err(e) => {
+                // Log error but continue - sensor might recover
+                eprintln!("LidarNode: Failed to read data: {}", e);
             }
         }
     }
 }
 
-impl<P> Drop for LidarNode<P>
+/// Builder for LidarNode with custom processor
+pub struct LidarNodeBuilder<D, P>
 where
-    P: Processor<LaserScan>,
-{
-    fn drop(&mut self) {
-        // Hardware cleanup would go here when LiDAR drivers are enabled
-    }
-}
-
-/// Builder for LidarNode with fluent API for processor configuration
-pub struct LidarNodeBuilder<P>
-where
+    D: Sensor<Output = LaserScan>,
     P: Processor<LaserScan>,
 {
     topic: String,
+    driver: Option<D>,
     backend: LidarBackend,
     processor: P,
 }
 
-impl LidarNodeBuilder<PassThrough<LaserScan>> {
+impl LidarNodeBuilder<LidarDriver, PassThrough<LaserScan>> {
     /// Create a new builder with default settings
     pub fn new() -> Self {
         Self {
             topic: "scan".to_string(),
+            driver: None,
             backend: LidarBackend::Simulation,
             processor: PassThrough::new(),
         }
     }
 }
 
-impl<P> LidarNodeBuilder<P>
+impl Default for LidarNodeBuilder<LidarDriver, PassThrough<LaserScan>> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<D, P> LidarNodeBuilder<D, P>
 where
+    D: Sensor<Output = LaserScan>,
     P: Processor<LaserScan>,
 {
     /// Set the topic for publishing laser scans
@@ -578,19 +386,25 @@ where
         self
     }
 
-    /// Set the LiDAR backend
+    /// Set the LiDAR backend (creates appropriate driver on build)
     pub fn backend(mut self, backend: LidarBackend) -> Self {
         self.backend = backend;
         self
     }
 
+    /// Alias for backend
+    pub fn with_backend(self, backend: LidarBackend) -> Self {
+        self.backend(backend)
+    }
+
     /// Set a custom processor
-    pub fn with_processor<P2>(self, processor: P2) -> LidarNodeBuilder<P2>
+    pub fn with_processor<P2>(self, processor: P2) -> LidarNodeBuilder<D, P2>
     where
         P2: Processor<LaserScan>,
     {
         LidarNodeBuilder {
             topic: self.topic,
+            driver: self.driver,
             backend: self.backend,
             processor,
         }
@@ -600,24 +414,29 @@ where
     pub fn with_closure<F>(
         self,
         f: F,
-    ) -> LidarNodeBuilder<ClosureProcessor<LaserScan, LaserScan, F>>
+    ) -> LidarNodeBuilder<D, ClosureProcessor<LaserScan, LaserScan, F>>
     where
         F: FnMut(LaserScan) -> LaserScan + Send + 'static,
     {
         LidarNodeBuilder {
             topic: self.topic,
+            driver: self.driver,
             backend: self.backend,
             processor: ClosureProcessor::new(f),
         }
     }
 
     /// Add a filter processor
-    pub fn with_filter<F>(self, f: F) -> LidarNodeBuilder<FilterProcessor<LaserScan, LaserScan, F>>
+    pub fn with_filter<F>(
+        self,
+        f: F,
+    ) -> LidarNodeBuilder<D, FilterProcessor<LaserScan, LaserScan, F>>
     where
         F: FnMut(LaserScan) -> Option<LaserScan> + Send + 'static,
     {
         LidarNodeBuilder {
             topic: self.topic,
+            driver: self.driver,
             backend: self.backend,
             processor: FilterProcessor::new(f),
         }
@@ -627,20 +446,29 @@ where
     pub fn pipe<P2>(
         self,
         next: P2,
-    ) -> LidarNodeBuilder<Pipeline<LaserScan, LaserScan, LaserScan, P, P2>>
+    ) -> LidarNodeBuilder<D, Pipeline<LaserScan, LaserScan, LaserScan, P, P2>>
     where
         P2: Processor<LaserScan, Output = LaserScan>,
         P: Processor<LaserScan, Output = LaserScan>,
     {
         LidarNodeBuilder {
             topic: self.topic,
+            driver: self.driver,
             backend: self.backend,
             processor: Pipeline::new(self.processor, next),
         }
     }
+}
 
-    /// Build the LidarNode
-    pub fn build(self) -> Result<LidarNode<P>> {
+impl<P> LidarNodeBuilder<LidarDriver, P>
+where
+    P: Processor<LaserScan>,
+{
+    /// Build the node with LidarDriver (default driver type)
+    pub fn build(self) -> Result<LidarNode<LidarDriver, P>> {
+        let driver_backend: LidarDriverBackend = self.backend.into();
+        let driver = LidarDriver::new(driver_backend)?;
+
         let max_range = match self.backend {
             LidarBackend::RplidarA1 => 12.0,
             LidarBackend::RplidarA2 => 16.0,
@@ -653,13 +481,12 @@ where
 
         Ok(LidarNode {
             publisher: Hub::new(&self.topic)?,
+            driver,
             frame_id: "laser_frame".to_string(),
             scan_frequency: 10.0,
             min_range: 0.1,
             max_range,
             angle_increment: std::f32::consts::PI / 180.0,
-            backend: self.backend,
-            serial_port: "/dev/ttyUSB0".to_string(),
             is_initialized: false,
             scan_count: 0,
             last_scan_time: 0,
@@ -667,3 +494,53 @@ where
         })
     }
 }
+
+// Builder for custom drivers
+impl<D, P> LidarNodeBuilder<D, P>
+where
+    D: Sensor<Output = LaserScan>,
+    P: Processor<LaserScan>,
+{
+    /// Set a custom driver
+    pub fn with_driver<D2>(self, driver: D2) -> LidarNodeBuilder<D2, P>
+    where
+        D2: Sensor<Output = LaserScan>,
+    {
+        LidarNodeBuilder {
+            topic: self.topic,
+            driver: Some(driver),
+            backend: self.backend,
+            processor: self.processor,
+        }
+    }
+
+    /// Build the node with a custom driver (requires driver to be set)
+    pub fn build_with_driver(self) -> Result<LidarNode<D, P>>
+    where
+        D: Default,
+    {
+        let driver = self.driver.unwrap_or_default();
+
+        Ok(LidarNode {
+            publisher: Hub::new(&self.topic)?,
+            driver,
+            frame_id: "laser_frame".to_string(),
+            scan_frequency: 10.0,
+            min_range: 0.1,
+            max_range: 30.0,
+            angle_increment: std::f32::consts::PI / 180.0,
+            is_initialized: false,
+            scan_count: 0,
+            last_scan_time: 0,
+            processor: self.processor,
+        })
+    }
+}
+
+// Convenience type aliases for common driver types
+/// LidarNode with SimulationLidarDriver
+pub type SimulationLidarNode<P = PassThrough<LaserScan>> = LidarNode<SimulationLidarDriver, P>;
+
+#[cfg(feature = "rplidar")]
+/// LidarNode with RplidarDriver
+pub type RplidarLidarNode<P = PassThrough<LaserScan>> = LidarNode<RplidarDriver, P>;

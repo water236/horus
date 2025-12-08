@@ -22,10 +22,11 @@ pub struct AuthService {
 
 /// Session information
 #[derive(Clone)]
-#[allow(dead_code)] // Fields stored for future session audit logging and IP-based tracking
 struct SessionInfo {
+    #[allow(dead_code)] // Stored for future session audit logging
     created_at: Instant,
-    last_used: Instant,
+    last_used: Instant, // Actively used for session expiry checks
+    #[allow(dead_code)] // Stored for future IP-based tracking
     ip_address: Option<String>,
 }
 
@@ -238,7 +239,7 @@ pub fn prompt_for_password_setup() -> Result<String> {
             println!(
                 "{} You can add a password later with: {}",
                 "[TIP]".cyan(),
-                "horus dashboard -r".bright_blue()
+                "horus monitor -r".bright_blue()
             );
             println!();
 

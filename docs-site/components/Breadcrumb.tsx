@@ -75,9 +75,6 @@ const segmentLabels: Record<string, string> = {
   // Performance files
   "benchmarks": "Benchmarks",
 
-  // Advanced files
-  "rtos-integration": "RTOS Integration",
-
   // API files
   "api-node": "Node",
   "api-hub": "Hub",

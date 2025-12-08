@@ -325,7 +325,7 @@ let motor = MotorNode::from_params()?;
 scheduler.add(Box::new(motor), 1, Some(true));
 ```
 
-**Adjust at runtime via dashboard!**
+**Adjust at runtime via monitor!**
 
 ### Environment-Based Setup
 
@@ -534,5 +534,5 @@ fn main() -> Result<()> {
 
 - **[Library Reference](/development/library-reference)** - Browse all standard library nodes
 - **[Package Management](/package-management/package-management)** - Discover and manage packages
-- **[node! Macro](/core-concepts/node-macro)** - When you need custom functionality
-- **[Examples](/basic-examples)** - See complete working systems
+- **[node! Macro](/concepts/node-macro)** - When you need custom functionality
+- **[Examples](/rust/examples/basic-examples)** - See complete working systems

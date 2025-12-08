@@ -63,7 +63,7 @@ HORUS has **native cross-platform support**:
 
 **What these packages do:**
 - **Core**: `libssl-dev` (networking), `libudev-dev` (device detection), `libasound2-dev` (audio)
-- **Graphics/GUI**: X11, Wayland libraries (required for sim2d and dashboard)
+- **Graphics/GUI**: X11, Wayland libraries (required for sim2d and monitor)
 - **Optional**: `libv4l-dev` (camera support), fontconfig (improved text rendering)
 
 **Not required:**
@@ -188,7 +188,7 @@ Test that the `horus` command works:
 horus --help
 ```
 
-You should see a list of available commands like `new`, `run`, `dashboard`, etc.
+You should see a list of available commands like `new`, `run`, `monitor`, etc.
 
 ### Step 6: Run Full Verification (Recommended)
 
@@ -201,10 +201,10 @@ Run the comprehensive verification script to ensure everything is working:
 **What it checks:**
 - [+] System requirements (Rust, Cargo, C compiler, pkg-config)
 - [+] System libraries (OpenSSL, udev, ALSA, X11, Wayland, etc.)
-- [+] Graphics libraries (required for sim2d and dashboard)
+- [+] Graphics libraries (required for sim2d and monitor)
 - [+] HORUS binary and installation path
 - [+] Core libraries in `~/.horus/cache/`
-- [+] All subcommands (`new`, `run`, `dashboard`, `pkg`, `env`, `auth`, `sim`)
+- [+] All subcommands (`new`, `run`, `monitor`, `pkg`, `env`, `auth`, `sim`)
 - [+] Build verification (`cargo check` with 0 warnings)
 - [+] Debug binary functionality
 - [+] Optional features (Python bindings, camera support)
@@ -268,7 +268,7 @@ cd horus_py
 maturin develop --release
 ```
 
-See [Python Bindings](/multi-language/python-bindings) for complete API documentation and examples.
+See [Python Bindings](/python/api/python-bindings) for complete API documentation and examples.
 
 ## Platform-Specific Notes
 
@@ -489,7 +489,7 @@ cargo build --release --features="gpio-hardware,i2c-hardware"
 - `ForceTorqueSensorNode` - F/T sensors (Modbus TCP, serial)
 - `DepthCameraNode` - RealSense cameras (librealsense2)
 
-See the [Built-in Nodes](/built-in-nodes) documentation for detailed usage examples.
+See the [Built-in Nodes](/rust/library/built-in-nodes) documentation for detailed usage examples.
 
 ### Windows (Native)
 
@@ -695,6 +695,6 @@ With HORUS installed, proceed to one of the following:
 
 1. **[Quick Start Tutorial](/getting-started/quick-start)** - Build your first HORUS application
 2. **[CLI Reference](/development/cli-reference)** - Complete command documentation
-3. **[Examples](/basic-examples)** - Sample HORUS applications
+3. **[Examples](/rust/examples/basic-examples)** - Sample HORUS applications
 
 Recommended: Start with the [Quick Start Tutorial](/getting-started/quick-start).

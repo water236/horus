@@ -489,6 +489,17 @@ path = "{}"
                 cmd.arg("--release");
             }
 
+            // Add features from driver configuration
+            let driver_config = get_active_drivers();
+            if let Some(features) = get_cargo_features_arg(&driver_config) {
+                cmd.arg("--features").arg(&features);
+                eprintln!(
+                    "  {} Auto-enabling features from drivers: {}",
+                    "󰢱".cyan(),
+                    features.green()
+                );
+            }
+
             let output = cmd.output()?;
             if !output.status.success() {
                 finish_error(&spinner, "Cargo build failed");
@@ -1222,6 +1233,17 @@ path = "{}"
     cmd.arg("build").current_dir(".horus");
     if release {
         cmd.arg("--release");
+    }
+
+    // Add features from driver configuration
+    let driver_config = get_active_drivers();
+    if let Some(features) = get_cargo_features_arg(&driver_config) {
+        cmd.arg("--features").arg(&features);
+        eprintln!(
+            "  {} Auto-enabling features from drivers: {}",
+            "󰢱".cyan(),
+            features.green()
+        );
     }
 
     let status = cmd.status()?;
@@ -2293,6 +2315,235 @@ pub fn parse_horus_yaml_ignore(path: &str) -> Result<IgnorePatterns> {
             Ok(ignore)
         }
         Err(_) => Ok(IgnorePatterns::default()),
+    }
+}
+
+/// Driver configuration from horus.yaml
+#[derive(Debug, Clone, Default)]
+pub struct DriverConfig {
+    /// List of drivers to enable (e.g., ["camera", "lidar", "imu"])
+    pub drivers: Vec<String>,
+    /// Backend overrides (e.g., {"lidar": "rplidar-a2", "imu": "mpu6050"})
+    pub backends: std::collections::HashMap<String, String>,
+}
+
+/// Resolve driver aliases to their expanded forms
+/// e.g., "vision" -> ["camera", "depth-camera"]
+fn resolve_driver_alias(alias: &str) -> Option<Vec<&'static str>> {
+    match alias {
+        "vision" => Some(vec!["camera", "depth-camera"]),
+        "navigation" => Some(vec!["lidar", "gps", "imu"]),
+        "manipulation" => Some(vec!["servo", "motor", "force-torque"]),
+        "locomotion" => Some(vec!["motor", "encoder", "imu"]),
+        "sensing" => Some(vec!["camera", "lidar", "ultrasonic", "imu"]),
+        _ => None,
+    }
+}
+
+/// Parse drivers section from horus.yaml
+///
+/// Supports two formats:
+/// ```yaml
+/// # Simple list format
+/// drivers:
+///   - camera
+///   - lidar
+///   - imu
+///
+/// # Or with backend overrides
+/// drivers:
+///   camera: opencv
+///   lidar: rplidar-a2
+///   imu: mpu6050
+/// ```
+pub fn parse_horus_yaml_drivers(path: &str) -> Result<DriverConfig> {
+    let content = fs::read_to_string(path)?;
+
+    match serde_yaml::from_str::<serde_yaml::Value>(&content) {
+        Ok(yaml) => {
+            let mut config = DriverConfig::default();
+
+            if let Some(drivers_value) = yaml.get("drivers") {
+                match drivers_value {
+                    // List format: drivers: [camera, lidar, imu]
+                    serde_yaml::Value::Sequence(list) => {
+                        for item in list {
+                            if let serde_yaml::Value::String(driver) = item {
+                                // Resolve aliases (e.g., "vision" -> ["camera", "depth-camera"])
+                                if let Some(expanded) = resolve_driver_alias(driver) {
+                                    for d in expanded {
+                                        config.drivers.push(d.to_string());
+                                    }
+                                } else {
+                                    config.drivers.push(driver.clone());
+                                }
+                            }
+                        }
+                    }
+
+                    // Map format: drivers: { camera: opencv, lidar: rplidar-a2 }
+                    serde_yaml::Value::Mapping(map) => {
+                        for (key, value) in map {
+                            if let serde_yaml::Value::String(driver_name) = key {
+                                // Add to drivers list
+                                if let Some(expanded) = resolve_driver_alias(driver_name) {
+                                    for d in expanded {
+                                        config.drivers.push(d.to_string());
+                                    }
+                                } else {
+                                    config.drivers.push(driver_name.clone());
+                                }
+
+                                // Store backend override if specified
+                                if let serde_yaml::Value::String(backend) = value {
+                                    config.backends.insert(driver_name.clone(), backend.clone());
+                                }
+                            }
+                        }
+                    }
+
+                    _ => {}
+                }
+            }
+
+            Ok(config)
+        }
+        Err(_) => Ok(DriverConfig::default()),
+    }
+}
+
+/// Get active drivers - combines CLI override, horus.yaml config, and HORUS_DRIVERS env var
+pub fn get_active_drivers() -> DriverConfig {
+    // Priority: HORUS_DRIVERS env var > CLI --drivers > horus.yaml
+    if let Ok(env_drivers) = std::env::var("HORUS_DRIVERS") {
+        let drivers: Vec<String> = env_drivers
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        if !drivers.is_empty() {
+            return DriverConfig {
+                drivers,
+                backends: std::collections::HashMap::new(),
+            };
+        }
+    }
+
+    // Fall back to horus.yaml
+    if std::path::Path::new("horus.yaml").exists() {
+        parse_horus_yaml_drivers("horus.yaml").unwrap_or_default()
+    } else {
+        DriverConfig::default()
+    }
+}
+
+/// Map a driver name and optional backend to Cargo feature(s)
+///
+/// This is the central mapping from user-friendly driver names to Cargo features.
+/// Users never need to know about features - they just specify drivers.
+///
+/// # Example mappings:
+/// - `imu` + `mpu6050` → `["mpu6050-imu"]`
+/// - `imu` + `bno055` → `["bno055-imu"]`
+/// - `camera` + `opencv` → `["opencv-backend"]`
+/// - `lidar` + `rplidar` → `["rplidar"]`
+pub fn driver_to_features(driver: &str, backend: Option<&str>) -> Vec<String> {
+    match driver.to_lowercase().as_str() {
+        // IMU drivers
+        "imu" => match backend.map(|s| s.to_lowercase()).as_deref() {
+            Some("mpu6050") => vec!["mpu6050-imu".to_string()],
+            Some("bno055") => vec!["bno055-imu".to_string()],
+            Some("icm20948") => vec![], // Not yet supported
+            _ => vec![],                // Simulation - no feature needed
+        },
+
+        // Camera drivers
+        "camera" => match backend.map(|s| s.to_lowercase()).as_deref() {
+            Some("opencv") => vec!["opencv-backend".to_string()],
+            Some("v4l2") => vec!["v4l2-backend".to_string()],
+            Some("realsense") => vec!["realsense".to_string()],
+            Some("zed") => vec!["zed".to_string()],
+            _ => vec![], // Simulation - no feature needed
+        },
+
+        // Depth camera
+        "depth-camera" => match backend.map(|s| s.to_lowercase()).as_deref() {
+            Some("realsense") => vec!["realsense".to_string()],
+            Some("zed") => vec!["zed".to_string()],
+            _ => vec![],
+        },
+
+        // LiDAR drivers
+        "lidar" => match backend.map(|s| s.to_lowercase()).as_deref() {
+            Some("rplidar") | Some("rplidar-a2") | Some("rplidar-a3") => {
+                vec!["rplidar".to_string()]
+            }
+            _ => vec![], // Simulation - no feature needed
+        },
+
+        // GPS drivers
+        "gps" => match backend.map(|s| s.to_lowercase()).as_deref() {
+            Some("nmea") => vec!["nmea-gps".to_string()],
+            _ => vec![],
+        },
+
+        // Input drivers
+        "joystick" => vec!["gilrs".to_string()],
+        "keyboard" => vec!["crossterm".to_string()],
+
+        // Modbus
+        "modbus" => vec!["modbus-hardware".to_string()],
+
+        // Hardware buses
+        "i2c" => vec!["i2c-hardware".to_string()],
+        "spi" => vec!["spi-hardware".to_string()],
+        "serial" => vec!["serial-hardware".to_string()],
+
+        // Motor drivers
+        "dc-motor" | "motor" => vec!["gpio-hardware".to_string()],
+        "servo" => vec!["gpio-hardware".to_string()],
+        "dynamixel" => vec!["serial-hardware".to_string()],
+
+        // Encoder
+        "encoder" => vec!["gpio-hardware".to_string()],
+
+        // GPIO
+        "gpio" => vec!["gpio-hardware".to_string()],
+
+        // Unknown driver - no features
+        _ => vec![],
+    }
+}
+
+/// Get Cargo features to enable based on driver configuration
+///
+/// Reads driver config and returns a list of Cargo features to pass to `cargo build --features`.
+pub fn get_cargo_features_from_drivers(config: &DriverConfig) -> Vec<String> {
+    let mut features = Vec::new();
+
+    for driver in &config.drivers {
+        let backend = config.backends.get(driver).map(|s| s.as_str());
+        let driver_features = driver_to_features(driver, backend);
+        for f in driver_features {
+            if !features.contains(&f) {
+                features.push(f);
+            }
+        }
+    }
+
+    features
+}
+
+/// Get features string for cargo build command
+///
+/// Returns empty string if no features needed, or `--features "feat1,feat2"` format.
+pub fn get_cargo_features_arg(config: &DriverConfig) -> Option<String> {
+    let features = get_cargo_features_from_drivers(config);
+    if features.is_empty() {
+        None
+    } else {
+        Some(features.join(","))
     }
 }
 
@@ -3972,6 +4223,17 @@ path = "{}"
             cmd.current_dir(".horus");
             if release {
                 cmd.arg("--release");
+            }
+
+            // Add features from driver configuration
+            let driver_config = get_active_drivers();
+            if let Some(features) = get_cargo_features_arg(&driver_config) {
+                cmd.arg("--features").arg(&features);
+                println!(
+                    "  {} Auto-enabling features from drivers: {}",
+                    "󰢱".cyan(),
+                    features.green()
+                );
             }
 
             let status = cmd.status()?;

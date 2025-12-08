@@ -15,7 +15,9 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use tracing::{debug, info, warn};
 
+use crate::assets::mesh::{MeshLoadOptions, MeshLoader};
 use crate::error::{EnhancedError, ErrorCategory, Result};
 use crate::scene::sdf_importer::{SDFImporter, SDFModel};
 
@@ -1031,18 +1033,26 @@ impl GazeboModelSpawner {
                 meshes.add(Mesh::from(bevy::prelude::Cuboid::new(size.x, 0.01, size.y)))
             }
             SDFGeometry::Mesh { uri, scale } => {
-                // For mesh URIs, try to resolve and load
-                // For now, spawn a placeholder cube - mesh loading would require asset server
-                warn!(
-                    "Mesh geometry '{}' - using placeholder (full mesh loading requires AssetServer)",
-                    uri
-                );
-                let placeholder_size = *scale * 0.1; // Small cube as placeholder
-                meshes.add(Mesh::from(bevy::prelude::Cuboid::new(
-                    placeholder_size.x.max(0.05),
-                    placeholder_size.y.max(0.05),
-                    placeholder_size.z.max(0.05),
-                )))
+                // Resolve and load the mesh from URI
+                match Self::load_mesh_from_uri(uri, model_path, scale) {
+                    Ok(loaded_mesh) => {
+                        info!("Loaded mesh geometry: {}", uri);
+                        meshes.add(loaded_mesh)
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to load mesh '{}': {}. Using placeholder cube.",
+                            uri, e
+                        );
+                        // Fallback to placeholder cube if mesh loading fails
+                        let placeholder_size = *scale * 0.1;
+                        meshes.add(Mesh::from(bevy::prelude::Cuboid::new(
+                            placeholder_size.x.max(0.05),
+                            placeholder_size.y.max(0.05),
+                            placeholder_size.z.max(0.05),
+                        )))
+                    }
+                }
             }
         };
 
@@ -1055,6 +1065,111 @@ impl GazeboModelSpawner {
                 Name::new(format!("visual_{}", visual.name)),
             ));
         });
+    }
+
+    /// Load a mesh from a Gazebo mesh URI
+    ///
+    /// Supports URI formats:
+    /// - `model://model_name/meshes/mesh.dae` - Model-relative URI
+    /// - `file:///path/to/mesh.stl` - Absolute file path
+    /// - `meshes/mesh.dae` - Relative path from model directory
+    fn load_mesh_from_uri(uri: &str, model_path: &Path, scale: &Vec3) -> anyhow::Result<Mesh> {
+        // Resolve the mesh path from the URI
+        let mesh_path = Self::resolve_mesh_uri(uri, model_path)?;
+
+        debug!("Resolved mesh URI '{}' to '{}'", uri, mesh_path.display());
+
+        // Create mesh loading options with the appropriate scale
+        let options = MeshLoadOptions::default().with_scale(*scale);
+
+        // Create a mesh loader and load the mesh
+        let mut loader = MeshLoader::new();
+        loader.add_base_path(model_path.to_path_buf());
+
+        // If the model has a meshes directory, add it as a base path
+        let meshes_dir = model_path.join("meshes");
+        if meshes_dir.exists() {
+            loader.add_base_path(meshes_dir);
+        }
+
+        let loaded = loader.load(&mesh_path, options)?;
+
+        Ok(loaded.mesh)
+    }
+
+    /// Resolve a Gazebo mesh URI to an actual file path
+    fn resolve_mesh_uri(uri: &str, model_path: &Path) -> anyhow::Result<PathBuf> {
+        if uri.starts_with("model://") {
+            // model://model_name/meshes/mesh.dae
+            // Extract the path after model://model_name/
+            let path_part = uri.trim_start_matches("model://");
+            let parts: Vec<&str> = path_part.splitn(2, '/').collect();
+            if parts.len() >= 2 {
+                // Use the relative path within the model
+                let relative_path = parts[1];
+                let resolved = model_path.join(relative_path);
+                if resolved.exists() {
+                    return Ok(resolved);
+                }
+                // Try without the model prefix - the path might be relative to model_path
+                let resolved = model_path.join(path_part);
+                if resolved.exists() {
+                    return Ok(resolved);
+                }
+            }
+            // Fall back to using the whole path relative to model_path
+            let resolved = model_path.join(path_part);
+            if resolved.exists() {
+                return Ok(resolved);
+            }
+            anyhow::bail!("Could not resolve model:// URI: {}", uri);
+        } else if uri.starts_with("file://") {
+            // file:///path/to/mesh.stl - absolute path
+            let path = uri.trim_start_matches("file://");
+            let resolved = PathBuf::from(path);
+            if resolved.exists() {
+                return Ok(resolved);
+            }
+            anyhow::bail!("File not found: {}", uri);
+        } else if uri.starts_with("package://") {
+            // package://package_name/path - ROS package URI
+            // Try to resolve relative to model path
+            let path_part = uri.trim_start_matches("package://");
+            let parts: Vec<&str> = path_part.splitn(2, '/').collect();
+            if parts.len() >= 2 {
+                let relative_path = parts[1];
+                let resolved = model_path.join(relative_path);
+                if resolved.exists() {
+                    return Ok(resolved);
+                }
+            }
+            anyhow::bail!("Could not resolve package:// URI: {}", uri);
+        } else {
+            // Relative path - resolve relative to model directory
+            let resolved = model_path.join(uri);
+            if resolved.exists() {
+                return Ok(resolved);
+            }
+
+            // Try in meshes subdirectory
+            let meshes_path = model_path.join("meshes").join(uri);
+            if meshes_path.exists() {
+                return Ok(meshes_path);
+            }
+
+            // Try as absolute path
+            let absolute = PathBuf::from(uri);
+            if absolute.exists() {
+                return Ok(absolute);
+            }
+
+            anyhow::bail!(
+                "Mesh file not found: {} (searched in {} and {})",
+                uri,
+                resolved.display(),
+                meshes_path.display()
+            );
+        }
     }
 }
 

@@ -76,7 +76,7 @@ pub fn create_new_project(
     }
 
     // Register workspace in ~/.horus/workspaces.json
-    // This makes it visible in dashboards (horus dashboard / horus dashboard -t)
+    // This makes it visible in monitors (horus monitor / horus monitor -t)
     if let Ok(mut registry) = crate::workspace::WorkspaceRegistry::load() {
         if let Ok(canonical_path) = project_path.canonicalize() {
             if registry.add(name.clone(), canonical_path).is_ok() {

@@ -123,7 +123,7 @@ fn show_entity_tree(
     let indent = depth as f32 * 16.0;
 
     // Check collapse state before the closure (scope fix)
-    let has_children = children_opt.map_or(false, |c| !c.is_empty());
+    let has_children = children_opt.is_some_and(|c| !c.is_empty());
     let is_collapsed = collapse_state.is_collapsed(entity);
 
     ui.horizontal(|ui| {
@@ -250,7 +250,7 @@ pub fn duplicate_entity_system(
 
             // Duplicate selectable
             if let Some(s) = selectable {
-                entity_commands.insert(Selectable::new(&format!("{} (Copy)", s.name)));
+                entity_commands.insert(Selectable::new(format!("{} (Copy)", s.name)));
             }
 
             // Duplicate visibility
@@ -376,7 +376,7 @@ fn show_entity_tree_with_events(
 
     let is_selected = selection.is_selected(entity);
     let is_collapsed = collapse_state.is_collapsed(entity);
-    let has_children = children_opt.map_or(false, |c| !c.is_empty());
+    let has_children = children_opt.is_some_and(|c| !c.is_empty());
 
     ui.horizontal(|ui| {
         ui.label(&indent);

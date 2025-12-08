@@ -8,7 +8,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 // Use modules from the library instead of redeclaring them
-use horus_manager::{commands, dashboard, dashboard_tui, registry, security, workspace};
+use horus_manager::{commands, monitor, monitor_tui, registry, security, workspace};
 
 #[derive(Parser)]
 #[command(name = "horus")]
@@ -53,10 +53,6 @@ enum Commands {
         /// Can specify multiple files: horus run file1.py file2.rs file3.py
         files: Vec<PathBuf>,
 
-        /// Build only, don't run
-        #[arg(short = 'b', long = "build-only")]
-        build_only: bool,
-
         /// Build in release mode
         #[arg(short = 'r', long = "release")]
         release: bool,
@@ -68,6 +64,16 @@ enum Commands {
         /// Suppress progress indicators
         #[arg(short = 'q', long = "quiet")]
         quiet: bool,
+
+        /// Override detected drivers (comma-separated list)
+        /// Example: --drivers camera,lidar,imu
+        #[arg(short = 'd', long = "drivers", value_delimiter = ',')]
+        drivers: Option<Vec<String>>,
+
+        /// Enable recording for this session
+        /// Use 'horus record list' to see recordings
+        #[arg(long = "record")]
+        record: Option<String>,
 
         /// Additional arguments to pass to the program (use -- to separate)
         #[arg(last = true)]
@@ -85,9 +91,70 @@ enum Commands {
         quiet: bool,
     },
 
-    /// Open the unified HORUS dashboard (web-based, auto-opens browser)
-    Dashboard {
-        /// Port for web dashboard (default: 3000)
+    /// Run tests for the HORUS project
+    Test {
+        /// Test name filter (runs tests matching this string)
+        #[arg(value_name = "FILTER")]
+        filter: Option<String>,
+
+        /// Run tests in release mode
+        #[arg(short = 'r', long = "release")]
+        release: bool,
+
+        /// Show test output (--nocapture)
+        #[arg(long = "nocapture")]
+        nocapture: bool,
+
+        /// Number of test threads (default: 1 for shared memory safety)
+        #[arg(short = 'j', long = "test-threads")]
+        test_threads: Option<usize>,
+
+        /// Allow parallel test execution (overrides default single-threaded mode)
+        #[arg(long = "parallel")]
+        parallel: bool,
+
+        /// Enable simulation mode (use simulation drivers, no hardware required)
+        #[arg(long = "sim")]
+        simulation: bool,
+
+        /// Run integration tests (tests marked #[ignore])
+        #[arg(long = "integration")]
+        integration: bool,
+
+        /// Skip the build step (assume already built)
+        #[arg(long = "no-build")]
+        no_build: bool,
+
+        /// Skip shared memory cleanup after tests
+        #[arg(long = "no-cleanup")]
+        no_cleanup: bool,
+
+        /// Verbose output
+        #[arg(short = 'v', long = "verbose")]
+        verbose: bool,
+    },
+
+    /// Build the HORUS project without running
+    Build {
+        /// File(s) to build (optional, auto-detects if not specified)
+        files: Vec<PathBuf>,
+
+        /// Build in release mode
+        #[arg(short = 'r', long = "release")]
+        release: bool,
+
+        /// Clean build (remove cache)
+        #[arg(short = 'c', long = "clean")]
+        clean: bool,
+
+        /// Suppress progress indicators
+        #[arg(short = 'q', long = "quiet")]
+        quiet: bool,
+    },
+
+    /// Monitor running HORUS nodes, topics, and system health
+    Monitor {
+        /// Port for web interface (default: 3000)
         #[arg(value_name = "PORT", default_value = "3000")]
         port: u16,
 
@@ -95,7 +162,7 @@ enum Commands {
         #[arg(short = 't', long = "tui")]
         tui: bool,
 
-        /// Reset dashboard password before starting
+        /// Reset password before starting
         #[arg(short = 'r', long = "reset-password")]
         reset_password: bool,
     },
@@ -182,6 +249,18 @@ enum Commands {
         /// World/scene file
         #[arg(long)]
         world: Option<PathBuf>,
+    },
+
+    /// Driver management (list, info, search)
+    Drivers {
+        #[command(subcommand)]
+        command: DriversCommands,
+    },
+
+    /// Record/replay management for debugging and testing
+    Record {
+        #[command(subcommand)]
+        command: RecordCommands,
     },
 
     /// Generate shell completion scripts
@@ -320,6 +399,117 @@ enum AuthCommands {
     Whoami,
 }
 
+#[derive(Subcommand)]
+enum DriversCommands {
+    /// List all available drivers
+    List {
+        /// Filter by category (sensor, actuator, bus, input, simulation)
+        #[arg(short = 'c', long = "category")]
+        category: Option<String>,
+    },
+
+    /// Show detailed information about a driver
+    Info {
+        /// Driver ID (e.g., rplidar, mpu6050, realsense)
+        driver: String,
+    },
+
+    /// Search for drivers
+    Search {
+        /// Search query
+        query: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum RecordCommands {
+    /// List all recording sessions
+    List {
+        /// Show detailed info (file sizes, tick counts)
+        #[arg(short = 'l', long = "long")]
+        long: bool,
+    },
+
+    /// Show details of a specific recording session
+    Info {
+        /// Session name
+        session: String,
+    },
+
+    /// Delete a recording session
+    Delete {
+        /// Session name to delete
+        session: String,
+        /// Force delete without confirmation
+        #[arg(short = 'f', long = "force")]
+        force: bool,
+    },
+
+    /// Replay a recording
+    Replay {
+        /// Path to scheduler recording or session name
+        recording: String,
+
+        /// Start at specific tick (time travel)
+        #[arg(long)]
+        start_tick: Option<u64>,
+
+        /// Stop at specific tick
+        #[arg(long)]
+        stop_tick: Option<u64>,
+
+        /// Playback speed multiplier (e.g., 0.5 for half speed)
+        #[arg(long, default_value = "1.0")]
+        speed: f64,
+
+        /// Override values (format: node.output=value)
+        #[arg(long = "override", value_parser = parse_override)]
+        overrides: Vec<(String, String, String)>,
+    },
+
+    /// Compare two recording sessions (diff)
+    Diff {
+        /// First session name or path
+        session1: String,
+        /// Second session name or path
+        session2: String,
+        /// Only show first N differences
+        #[arg(short = 'n', long = "limit")]
+        limit: Option<usize>,
+    },
+
+    /// Export a recording to different format
+    Export {
+        /// Session name
+        session: String,
+        /// Output file path
+        #[arg(short = 'o', long = "output")]
+        output: PathBuf,
+        /// Export format (json, csv)
+        #[arg(short = 'f', long = "format", default_value = "json")]
+        format: String,
+    },
+}
+
+/// Parse override argument in format "node.output=value"
+fn parse_override(s: &str) -> Result<(String, String, String), String> {
+    let parts: Vec<&str> = s.splitn(2, '=').collect();
+    if parts.len() != 2 {
+        return Err("Override must be in format 'node.output=value'".to_string());
+    }
+
+    let key_parts: Vec<&str> = parts[0].splitn(2, '.').collect();
+    if key_parts.len() != 2 {
+        return Err("Override key must be in format 'node.output'".to_string());
+    }
+
+    Ok((
+        key_parts[0].to_string(),
+        key_parts[1].to_string(),
+        parts[1].to_string(),
+    ))
+}
+
 // SimCommands enum removed - sim now uses flags directly with 3D as default
 
 fn main() {
@@ -338,12 +528,14 @@ fn main() {
                 | "new"
                 | "run"
                 | "check"
-                | "dashboard"
+                | "monitor"
                 | "pkg"
                 | "env"
                 | "auth"
                 | "sim2d"
                 | "sim3d"
+                | "drivers"
+                | "record"
                 | "completion"
                 | "help"
                 | "--help"
@@ -410,24 +602,48 @@ fn run_command(command: Commands) -> HorusResult<()> {
 
         Commands::Run {
             files,
-            build_only,
             release,
             clean,
             quiet,
+            drivers,
             args,
+            record,
         } => {
             // Set quiet mode for progress indicators
             horus_manager::progress::set_quiet(quiet);
 
-            if build_only {
-                // Build-only mode - compile but don't execute
-                commands::run::execute_build_only(files, release, clean)
-                    .map_err(|e| HorusError::Config(e.to_string()))
-            } else {
-                // Normal run mode (build if needed, then run)
-                commands::run::execute_run(files, args, release, clean)
-                    .map_err(|e| HorusError::Config(e.to_string()))
+            // Store drivers override in environment variable for later use
+            if let Some(ref driver_list) = drivers {
+                std::env::set_var("HORUS_DRIVERS", driver_list.join(","));
             }
+
+            // If recording enabled, set environment variable for nodes to pick up
+            if let Some(ref session_name) = record {
+                std::env::set_var("HORUS_RECORD_SESSION", session_name);
+                println!(
+                    "{} Recording enabled: session '{}'",
+                    "[RECORD]".yellow().bold(),
+                    session_name
+                );
+            }
+
+            // Build and run
+            commands::run::execute_run(files, args, release, clean)
+                .map_err(|e| HorusError::Config(e.to_string()))
+        }
+
+        Commands::Build {
+            files,
+            release,
+            clean,
+            quiet,
+        } => {
+            // Set quiet mode for progress indicators
+            horus_manager::progress::set_quiet(quiet);
+
+            // Build only - compile but don't execute
+            commands::run::execute_build_only(files, release, clean)
+                .map_err(|e| HorusError::Config(e.to_string()))
         }
 
         Commands::Check { path, quiet } => {
@@ -1674,7 +1890,35 @@ except ImportError as e:
             }
         }
 
-        Commands::Dashboard {
+        Commands::Test {
+            filter,
+            release,
+            nocapture,
+            test_threads,
+            parallel,
+            simulation,
+            integration,
+            no_build,
+            no_cleanup,
+            verbose,
+        } => {
+            commands::test::run_tests(
+                filter,
+                release,
+                nocapture,
+                test_threads,
+                parallel,
+                simulation,
+                integration,
+                no_build,
+                no_cleanup,
+                verbose,
+            )
+            .map_err(|e| HorusError::Config(e.to_string()))?;
+            Ok(())
+        }
+
+        Commands::Monitor {
             port,
             tui,
             reset_password,
@@ -1685,31 +1929,31 @@ except ImportError as e:
             }
 
             if tui {
-                println!("{} Opening HORUS Terminal UI dashboard...", "".cyan());
-                // Launch TUI dashboard
-                dashboard_tui::TuiDashboard::run().map_err(|e| HorusError::Config(e.to_string()))
+                println!("{} Opening HORUS monitor (TUI)...", "".cyan());
+                // Launch TUI monitor
+                monitor_tui::TuiDashboard::run().map_err(|e| HorusError::Config(e.to_string()))
             } else {
-                // Default: Launch web dashboard and auto-open browser
+                // Default: Launch web monitor and auto-open browser
                 println!(
-                    "{} Starting HORUS web dashboard on http://localhost:{}...",
+                    "{} Starting HORUS monitor on http://localhost:{}...",
                     "".cyan(),
                     port
                 );
                 println!("  {} Password-protected access", "".dimmed());
                 println!("  {} Opening browser...", "".dimmed());
                 println!(
-                    "  {} Use 'horus dashboard -t' for Terminal UI",
+                    "  {} Use 'horus monitor -t' for Terminal UI",
                     "Tip:".dimmed()
                 );
 
                 tokio::runtime::Runtime::new()
                     .unwrap()
-                    .block_on(dashboard::run(port))
+                    .block_on(monitor::run(port))
                     .map_err(|e| {
                         let err_str = e.to_string();
                         if err_str.contains("Address already in use") || err_str.contains("os error 98") {
                             HorusError::Config(format!(
-                                "Port {} is already in use.\n  {} Try a different port: horus dashboard <PORT>\n  {} Example: horus dashboard {}",
+                                "Port {} is already in use.\n  {} Try a different port: horus monitor <PORT>\n  {} Example: horus monitor {}",
                                 port,
                                 "".cyan(),
                                 "".cyan(),
@@ -3088,6 +3332,537 @@ except ImportError as e:
             }
 
             Ok(())
+        }
+
+        Commands::Drivers { command } => {
+            // Driver alias resolver (local implementation)
+            fn resolve_driver_alias_local(alias: &str) -> Option<Vec<&'static str>> {
+                match alias {
+                    "vision" => Some(vec!["camera", "depth-camera"]),
+                    "navigation" => Some(vec!["lidar", "gps", "imu"]),
+                    "manipulation" => Some(vec!["servo", "motor", "force-torque"]),
+                    "locomotion" => Some(vec!["motor", "encoder", "imu"]),
+                    "sensing" => Some(vec!["camera", "lidar", "ultrasonic", "imu"]),
+                    _ => None,
+                }
+            }
+
+            // Built-in driver definitions
+            struct DriverInfo {
+                id: &'static str,
+                name: &'static str,
+                category: &'static str,
+                description: &'static str,
+            }
+
+            let built_in_drivers = vec![
+                DriverInfo {
+                    id: "camera",
+                    name: "Camera Driver",
+                    category: "Sensor",
+                    description: "RGB camera support (OpenCV, V4L2)",
+                },
+                DriverInfo {
+                    id: "depth-camera",
+                    name: "Depth Camera Driver",
+                    category: "Sensor",
+                    description: "Depth sensing (RealSense, Kinect)",
+                },
+                DriverInfo {
+                    id: "lidar",
+                    name: "LiDAR Driver",
+                    category: "Sensor",
+                    description: "2D/3D LiDAR (RPLidar, Velodyne)",
+                },
+                DriverInfo {
+                    id: "imu",
+                    name: "IMU Driver",
+                    category: "Sensor",
+                    description: "Inertial measurement (MPU6050, BNO055)",
+                },
+                DriverInfo {
+                    id: "gps",
+                    name: "GPS Driver",
+                    category: "Sensor",
+                    description: "GPS/GNSS receivers",
+                },
+                DriverInfo {
+                    id: "ultrasonic",
+                    name: "Ultrasonic Driver",
+                    category: "Sensor",
+                    description: "Ultrasonic rangefinders",
+                },
+                DriverInfo {
+                    id: "motor",
+                    name: "Motor Driver",
+                    category: "Actuator",
+                    description: "DC/BLDC motors",
+                },
+                DriverInfo {
+                    id: "servo",
+                    name: "Servo Driver",
+                    category: "Actuator",
+                    description: "Servo motors (PWM, Dynamixel)",
+                },
+                DriverInfo {
+                    id: "stepper",
+                    name: "Stepper Driver",
+                    category: "Actuator",
+                    description: "Stepper motors",
+                },
+                DriverInfo {
+                    id: "encoder",
+                    name: "Encoder Driver",
+                    category: "Sensor",
+                    description: "Rotary/linear encoders",
+                },
+                DriverInfo {
+                    id: "force-torque",
+                    name: "Force/Torque Driver",
+                    category: "Sensor",
+                    description: "Force/torque sensors",
+                },
+                DriverInfo {
+                    id: "serial",
+                    name: "Serial Driver",
+                    category: "Bus",
+                    description: "UART/RS232/RS485",
+                },
+                DriverInfo {
+                    id: "i2c",
+                    name: "I2C Driver",
+                    category: "Bus",
+                    description: "I2C bus communication",
+                },
+                DriverInfo {
+                    id: "spi",
+                    name: "SPI Driver",
+                    category: "Bus",
+                    description: "SPI bus communication",
+                },
+                DriverInfo {
+                    id: "can",
+                    name: "CAN Driver",
+                    category: "Bus",
+                    description: "CAN bus communication",
+                },
+                DriverInfo {
+                    id: "modbus",
+                    name: "Modbus Driver",
+                    category: "Bus",
+                    description: "Modbus RTU/TCP",
+                },
+                DriverInfo {
+                    id: "joystick",
+                    name: "Joystick Driver",
+                    category: "Input",
+                    description: "Gamepad/joystick input",
+                },
+                DriverInfo {
+                    id: "keyboard",
+                    name: "Keyboard Driver",
+                    category: "Input",
+                    description: "Keyboard input",
+                },
+            ];
+
+            match command {
+                DriversCommands::List { category } => {
+                    let drivers: Vec<_> = if let Some(cat_str) = category {
+                        let cat_lower = cat_str.to_lowercase();
+                        let cat_match = match cat_lower.as_str() {
+                            "sensor" | "sensors" => "Sensor",
+                            "actuator" | "actuators" => "Actuator",
+                            "bus" | "buses" => "Bus",
+                            "input" | "inputs" => "Input",
+                            "simulation" | "sim" => "Simulation",
+                            _ => {
+                                println!("{} Unknown category: {}", "[WARN]".yellow(), cat_str);
+                                println!(
+                                    "       Valid categories: sensor, actuator, bus, input, simulation"
+                                );
+                                return Ok(());
+                            }
+                        };
+                        built_in_drivers
+                            .iter()
+                            .filter(|d| d.category == cat_match)
+                            .collect()
+                    } else {
+                        built_in_drivers.iter().collect()
+                    };
+
+                    if drivers.is_empty() {
+                        println!("{} No drivers found for this category.", "".cyan());
+                    } else {
+                        println!("{} Available Drivers:\n", "".cyan().bold());
+                        for driver in &drivers {
+                            println!(
+                                "  {} {} ({})",
+                                "".green(),
+                                driver.id.yellow(),
+                                driver.category
+                            );
+                            if !driver.description.is_empty() {
+                                println!("     {}", driver.description.dimmed());
+                            }
+                        }
+                    }
+                    Ok(())
+                }
+
+                DriversCommands::Info { driver } => {
+                    // Check if it's an alias first
+                    if let Some(expanded) = resolve_driver_alias_local(&driver) {
+                        println!("{} Driver Alias: {}\n", "".cyan().bold(), driver.yellow());
+                        println!("  Expands to: {}", expanded.join(", ").green());
+                        return Ok(());
+                    }
+
+                    // Look up driver info
+                    if let Some(info) = built_in_drivers.iter().find(|d| d.id == driver) {
+                        println!("{} Driver: {}\n", "".cyan().bold(), info.name.yellow());
+                        println!("  ID:       {}", info.id);
+                        println!("  Category: {}", info.category);
+                        if !info.description.is_empty() {
+                            println!("  Desc:     {}", info.description);
+                        }
+                    } else {
+                        println!("{} Driver '{}' not found.", "[WARN]".yellow(), driver);
+                        println!("\nUse 'horus drivers list' to see available drivers.");
+                    }
+                    Ok(())
+                }
+
+                DriversCommands::Search { query } => {
+                    let query_lower = query.to_lowercase();
+
+                    let matches: Vec<_> = built_in_drivers
+                        .iter()
+                        .filter(|d| {
+                            d.id.to_lowercase().contains(&query_lower)
+                                || d.name.to_lowercase().contains(&query_lower)
+                                || d.description.to_lowercase().contains(&query_lower)
+                        })
+                        .collect();
+
+                    if matches.is_empty() {
+                        println!("{} No drivers found matching '{}'", "[INFO]".cyan(), query);
+                    } else {
+                        println!(
+                            "{} Found {} driver(s) matching '{}':\n",
+                            "".green(),
+                            matches.len(),
+                            query
+                        );
+                        for driver in matches {
+                            println!("  {} {} - {}", "".green(), driver.id.yellow(), driver.name);
+                        }
+                    }
+                    Ok(())
+                }
+            }
+        }
+
+        Commands::Record { command } => {
+            use horus_core::scheduling::{diff_recordings, RecordingManager};
+
+            let manager = RecordingManager::new();
+
+            match command {
+                RecordCommands::List { long } => {
+                    let sessions = manager.list_sessions().map_err(|e| {
+                        HorusError::Internal(format!("Failed to list recordings: {}", e))
+                    })?;
+
+                    if sessions.is_empty() {
+                        println!("{} No recording sessions found.", "[INFO]".cyan());
+                        println!("       Use 'horus run --record <session>' to create one.");
+                    } else {
+                        println!(
+                            "{} Found {} recording session(s):\n",
+                            "".green(),
+                            sessions.len()
+                        );
+
+                        for session in sessions {
+                            if long {
+                                // Get detailed info
+                                let recordings =
+                                    manager.get_session_recordings(&session).unwrap_or_default();
+                                let total_size: u64 = recordings
+                                    .iter()
+                                    .filter_map(|p| std::fs::metadata(p).ok())
+                                    .map(|m| m.len())
+                                    .sum();
+
+                                println!(
+                                    "  {} {} ({} files, {:.1} MB)",
+                                    "".green(),
+                                    session.yellow(),
+                                    recordings.len(),
+                                    total_size as f64 / 1_048_576.0
+                                );
+                            } else {
+                                println!("  {} {}", "".green(), session.yellow());
+                            }
+                        }
+                    }
+                    Ok(())
+                }
+
+                RecordCommands::Info { session } => {
+                    let recordings = manager.get_session_recordings(&session).map_err(|e| {
+                        HorusError::Internal(format!("Failed to get session info: {}", e))
+                    })?;
+
+                    if recordings.is_empty() {
+                        println!("{} Session '{}' not found.", "[WARN]".yellow(), session);
+                        return Ok(());
+                    }
+
+                    println!("{} Session: {}\n", "".green(), session.yellow().bold());
+
+                    for path in recordings {
+                        let filename = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unknown");
+                        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+
+                        // Try to load and get tick count
+                        let tick_info = if let Ok(recording) =
+                            horus_core::scheduling::NodeRecording::load(&path)
+                        {
+                            format!("ticks {}-{}", recording.first_tick, recording.last_tick)
+                        } else {
+                            "scheduler recording".to_string()
+                        };
+
+                        println!(
+                            "  {} {} ({:.1} KB, {})",
+                            "".cyan(),
+                            filename,
+                            size as f64 / 1024.0,
+                            tick_info
+                        );
+                    }
+                    Ok(())
+                }
+
+                RecordCommands::Delete { session, force } => {
+                    if !force {
+                        println!(
+                            "{} Delete session '{}'? (y/N)",
+                            "[CONFIRM]".yellow(),
+                            session
+                        );
+                        let mut input = String::new();
+                        std::io::stdin().read_line(&mut input).ok();
+                        if !input.trim().eq_ignore_ascii_case("y") {
+                            println!("Cancelled.");
+                            return Ok(());
+                        }
+                    }
+
+                    manager.delete_session(&session).map_err(|e| {
+                        HorusError::Internal(format!("Failed to delete session: {}", e))
+                    })?;
+
+                    println!("{} Deleted session '{}'", "".green(), session);
+                    Ok(())
+                }
+
+                RecordCommands::Replay {
+                    recording,
+                    start_tick,
+                    stop_tick,
+                    speed,
+                    overrides,
+                } => {
+                    println!("{} Replay functionality", "[INFO]".cyan());
+                    println!("       Recording: {}", recording);
+                    if let Some(start) = start_tick {
+                        println!("       Start tick: {}", start);
+                    }
+                    if let Some(stop) = stop_tick {
+                        println!("       Stop tick: {}", stop);
+                    }
+                    println!("       Speed: {}x", speed);
+                    if !overrides.is_empty() {
+                        println!("       Overrides:");
+                        for (node, output, value) in &overrides {
+                            println!("         {}.{} = {}", node, output, value);
+                        }
+                    }
+                    println!("\n       To replay programmatically:");
+                    println!(
+                        "       let scheduler = Scheduler::replay_from(PathBuf::from(\"{}\"))?;",
+                        recording
+                    );
+                    if let Some(tick) = start_tick {
+                        println!("           .start_at_tick({});", tick);
+                    }
+                    println!("       scheduler.run();");
+                    Ok(())
+                }
+
+                RecordCommands::Diff {
+                    session1,
+                    session2,
+                    limit,
+                } => {
+                    println!(
+                        "{} Comparing '{}' vs '{}'...\n",
+                        "[DIFF]".cyan(),
+                        session1,
+                        session2
+                    );
+
+                    // Get recordings from both sessions
+                    let recordings1 = manager.get_session_recordings(&session1).map_err(|e| {
+                        HorusError::Internal(format!(
+                            "Failed to load session '{}': {}",
+                            session1, e
+                        ))
+                    })?;
+
+                    let recordings2 = manager.get_session_recordings(&session2).map_err(|e| {
+                        HorusError::Internal(format!(
+                            "Failed to load session '{}': {}",
+                            session2, e
+                        ))
+                    })?;
+
+                    // Find matching nodes
+                    let mut total_diffs = 0;
+                    let max_diffs = limit.unwrap_or(100);
+
+                    for path1 in &recordings1 {
+                        let name1 = path1
+                            .file_stem()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("")
+                            .split('@')
+                            .next()
+                            .unwrap_or("");
+
+                        for path2 in &recordings2 {
+                            let name2 = path2
+                                .file_stem()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("")
+                                .split('@')
+                                .next()
+                                .unwrap_or("");
+
+                            if name1 == name2 && !name1.is_empty() && name1 != "scheduler" {
+                                // Load and compare
+                                if let (Ok(rec1), Ok(rec2)) = (
+                                    horus_core::scheduling::NodeRecording::load(path1),
+                                    horus_core::scheduling::NodeRecording::load(path2),
+                                ) {
+                                    let diffs = diff_recordings(&rec1, &rec2);
+                                    if !diffs.is_empty() {
+                                        println!(
+                                            "  {} Node '{}': {} differences",
+                                            "".yellow(),
+                                            name1,
+                                            diffs.len()
+                                        );
+                                        for diff in diffs.iter().take(max_diffs - total_diffs) {
+                                            match diff {
+                                                horus_core::scheduling::RecordingDiff::OutputDifference { tick, topic, .. } => {
+                                                    println!("    Tick {}: output '{}' differs", tick, topic);
+                                                }
+                                                horus_core::scheduling::RecordingDiff::MissingTick { tick, in_recording } => {
+                                                    println!("    Tick {} missing in recording {}", tick, in_recording);
+                                                }
+                                                horus_core::scheduling::RecordingDiff::MissingOutput { tick, topic, in_recording } => {
+                                                    println!("    Tick {}: output '{}' missing in recording {}", tick, topic, in_recording);
+                                                }
+                                            }
+                                            total_diffs += 1;
+                                        }
+                                    } else {
+                                        println!("  {} Node '{}': identical", "".green(), name1);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if total_diffs == 0 {
+                        println!("\n{} No differences found!", "".green());
+                    } else {
+                        println!("\n{} Total: {} difference(s)", "".yellow(), total_diffs);
+                    }
+                    Ok(())
+                }
+
+                RecordCommands::Export {
+                    session,
+                    output,
+                    format,
+                } => {
+                    println!(
+                        "{} Exporting session '{}' to {:?} (format: {})",
+                        "[EXPORT]".cyan(),
+                        session,
+                        output,
+                        format
+                    );
+
+                    let recordings = manager.get_session_recordings(&session).map_err(|e| {
+                        HorusError::Internal(format!("Failed to load session: {}", e))
+                    })?;
+
+                    if format == "json" {
+                        use std::io::Write;
+                        let mut file = std::fs::File::create(&output).map_err(|e| {
+                            HorusError::Internal(format!("Failed to create output file: {}", e))
+                        })?;
+
+                        writeln!(file, "{{")?;
+                        writeln!(file, "  \"session\": \"{}\",", session)?;
+                        writeln!(file, "  \"recordings\": [")?;
+
+                        for (i, path) in recordings.iter().enumerate() {
+                            if let Ok(recording) = horus_core::scheduling::NodeRecording::load(path)
+                            {
+                                let comma = if i < recordings.len() - 1 { "," } else { "" };
+                                writeln!(file, "    {{")?;
+                                writeln!(
+                                    file,
+                                    "      \"node_name\": \"{}\",",
+                                    recording.node_name
+                                )?;
+                                writeln!(file, "      \"node_id\": \"{}\",", recording.node_id)?;
+                                writeln!(file, "      \"first_tick\": {},", recording.first_tick)?;
+                                writeln!(file, "      \"last_tick\": {},", recording.last_tick)?;
+                                writeln!(
+                                    file,
+                                    "      \"snapshot_count\": {}",
+                                    recording.snapshots.len()
+                                )?;
+                                writeln!(file, "    }}{}", comma)?;
+                            }
+                        }
+
+                        writeln!(file, "  ]")?;
+                        writeln!(file, "}}")?;
+
+                        println!("{} Exported to {:?}", "".green(), output);
+                    } else {
+                        println!(
+                            "{} Format '{}' not yet supported",
+                            "[WARN]".yellow(),
+                            format
+                        );
+                    }
+                    Ok(())
+                }
+            }
         }
 
         Commands::Completion { shell } => {

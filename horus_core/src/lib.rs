@@ -32,14 +32,12 @@
 pub mod backend;
 pub mod communication;
 pub mod core;
+pub mod driver;
 pub mod error;
 pub mod memory;
 pub mod ml;
 pub mod params;
 pub mod scheduling;
-
-#[cfg(feature = "rtos")]
-pub mod rtos;
 
 // Re-export commonly used types for easy access
 pub use communication::{Hub, Link, LinkMetrics};
@@ -53,3 +51,6 @@ pub use scheduling::Scheduler;
 
 // Re-export communication traits for backend-agnostic usage
 pub use communication::traits::{Channel, Publisher, Subscriber};
+
+// Re-export driver utilities (no traits - drivers are simple structs)
+pub use driver::{DriverCategory, DriverStatus, DriversConfig, SingleDriverConfig};
