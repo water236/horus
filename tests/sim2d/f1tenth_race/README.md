@@ -33,7 +33,7 @@ This project implements a three-phase racing approach:
 
 ### Terminal 1: Start the simulator
 ```bash
-cd /path/to/HORUS
+cd /path/to/horus
 
 # Easy track
 cargo run -p sim2d -- --robot tests/sim2d/f1tenth_race/f1tenth_robot.yaml

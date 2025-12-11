@@ -117,7 +117,7 @@ horus_library = { version = "0.1", features = ["rplidar"] }
 ### Construction
 
 ```rust
-use horus_library::nodes::LidarNode;
+use horus_library::nodes::lidar::LidarNode;
 
 // Create with default topic "scan"
 let mut lidar = LidarNode::new()?;
@@ -178,7 +178,7 @@ eprintln!("Actual scan rate: {} Hz", actual_rate);
 ### Basic Obstacle Detection
 
 ```rust
-use horus_library::nodes::LidarNode;
+use horus_library::nodes::lidar::LidarNode;
 use horus::prelude::*;
 use horus::prelude::*;
 
@@ -238,7 +238,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Multi-LiDAR Setup (Front and Rear)
 
 ```rust
-use horus_library::nodes::LidarNode;
+use horus_library::nodes::lidar::LidarNode;
 use horus::prelude::*;
 use horus::prelude::*;
 
@@ -461,7 +461,7 @@ lidar.set_scan_frequency(20.0);
 ### GMapping SLAM Integration
 
 ```rust
-use horus_library::nodes::LidarNode;
+use horus_library::nodes::lidar::LidarNode;
 use horus::prelude::*;
 use horus::prelude::*;
 

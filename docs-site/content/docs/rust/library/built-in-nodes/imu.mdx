@@ -188,7 +188,7 @@ let actual_rate = imu.get_actual_sample_rate();
 ### Hardware Backend Options
 
 ```rust
-use horus_library::nodes::ImuBackend;
+use horus_library::nodes::imu::ImuBackend;
 
 // Simulation mode (no hardware required)
 imu.set_backend(ImuBackend::Simulation);
@@ -245,7 +245,7 @@ if let Some(data) = hub.recv(&mut None) {
 ### Orientation Monitoring with Euler Angles
 
 ```rust
-use horus_library::nodes::ImuNode;
+use horus_library::nodes::imu::ImuNode;
 use horus_library::{Imu, Quaternion};
 use horus::prelude::*;
 use std::f64::consts::PI;

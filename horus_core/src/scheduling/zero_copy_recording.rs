@@ -782,7 +782,7 @@ pub struct TickIterator<'a> {
     index: usize,
 }
 
-impl<'a> Iterator for TickIterator<'a> {
+impl Iterator for TickIterator<'_> {
     type Item = TickData;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -800,7 +800,7 @@ impl<'a> Iterator for TickIterator<'a> {
     }
 }
 
-impl<'a> ExactSizeIterator for TickIterator<'a> {}
+impl ExactSizeIterator for TickIterator<'_> {}
 
 // ============================================================================
 // Streaming Recorder (for continuous recording without pre-allocation)

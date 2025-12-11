@@ -88,7 +88,7 @@ export default function manifest(): MetadataRoute.Manifest {
     related_applications: [
       {
         platform: 'web',
-        url: 'https://github.com/softmata/HORUS',
+        url: 'https://github.com/softmata/horus',
         id: 'horus-github',
       },
     ],

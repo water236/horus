@@ -66,7 +66,7 @@ export PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1
 Clone the HORUS repository and build Sim3D:
 
 ```bash
-git clone https://github.com/horus-project/horus.git
+git clone https://github.com/softmata/horus.git
 cd horus/horus_library/tools/sim3d
 
 # Visual mode (default) - includes 3D rendering

@@ -1,4 +1,5 @@
 pub mod clean;
+pub mod deploy;
 pub mod doctor;
 pub mod github_auth;
 pub mod init;

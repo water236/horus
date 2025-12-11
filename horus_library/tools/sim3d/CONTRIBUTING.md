@@ -73,8 +73,8 @@ $env:OPENCV_LINK_PATHS = "C:\tools\opencv\build\x64\vc16\lib"
 
 ```bash
 # Clone the repository
-git clone https://github.com/HORUS/HORUS.git
-cd HORUS/horus_library/tools/sim3d
+git clone https://github.com/softmata/horus.git
+cd horus/horus_library/tools/sim3d
 
 # Build in debug mode
 cargo build
@@ -433,7 +433,7 @@ Include:
 ## Questions?
 
 - Check the [documentation](docs/)
-- Search existing [issues](https://github.com/HORUS/HORUS/issues)
+- Search existing [issues](https://github.com/softmata/horus/issues)
 - Ask in discussions or create a new issue
 
 Thank you for contributing to sim3d!

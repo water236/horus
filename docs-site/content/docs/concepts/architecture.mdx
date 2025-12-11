@@ -414,9 +414,9 @@ for node in scheduler.nodes_sorted_by_priority() {
 
 **Example:**
 ```rust
-scheduler.add(keyboard_node, 0, Some(true));   // Runs first
-scheduler.add(controller, 5, Some(true));      // Processes input
-scheduler.add(motor_driver, 10, Some(true));   // Actuates
+scheduler.add(Box::new(keyboard_node), 0, Some(true));   // Runs first
+scheduler.add(Box::new(controller), 5, Some(true));      // Processes input
+scheduler.add(Box::new(motor_driver), 10, Some(true));   // Actuates
 ```
 
 ### Tick Rate Limitation
@@ -647,8 +647,8 @@ For Rust projects, `horus run` uses **Cargo for compilation** while maintaining 
    path = "../main.rs"  # Path reference, no source copying
 
    [dependencies]
-   horus = { path = "/path/to/HORUS/horus" }
-   horus_library = { path = "/path/to/HORUS/horus_library" }
+   horus = { path = "/path/to/horus/horus" }
+   horus_library = { path = "/path/to/horus/horus_library" }
    ```
 
 3. **Build Process**:
@@ -669,7 +669,7 @@ For Rust projects, `horus run` uses **Cargo for compilation** while maintaining 
 
 The CLI automatically finds HORUS source via:
 1. `$HORUS_SOURCE` environment variable (if set)
-2. Common installation paths: `~/horus/HORUS`, `/horus`, `/opt/horus`, `/usr/local/horus`
+2. Common installation paths: `~/softmata/horus`, `/horus`, `/opt/horus`, `/usr/local/horus`
 
 **Workspace Structure:**
 ```

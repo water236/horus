@@ -23,7 +23,7 @@ HORUS includes utility scripts to help you update, recover from broken installat
 To update to the latest version:
 
 ```bash
-cd /path/to/HORUS
+cd /path/to/horus
 git pull
 ./install.sh
 ```
@@ -193,7 +193,7 @@ fi
 
 ```bash
 # Navigate to HORUS source directory
-cd /path/to/HORUS
+cd /path/to/horus
 
 # 1. Clean build artifacts
 cargo clean
@@ -437,7 +437,7 @@ horus run
 ```bash
 # Only needed if --clean doesn't work
 # This reinstalls HORUS libraries globally
-cd /path/to/HORUS
+cd /path/to/horus
 cargo clean && rm -rf ~/.horus/cache && ./install.sh
 ```
 
@@ -458,12 +458,12 @@ Error: HORUS source directory not found. Please set HORUS_SOURCE environment var
 **Solution:**
 ```bash
 # Option 1: Set HORUS_SOURCE (recommended for non-standard installations)
-export HORUS_SOURCE=/path/to/HORUS
-echo 'export HORUS_SOURCE=/path/to/HORUS' >> ~/.bashrc
+export HORUS_SOURCE=/path/to/horus
+echo 'export HORUS_SOURCE=/path/to/horus' >> ~/.bashrc
 
 # Option 2: Install HORUS to a standard location
 # The CLI checks these paths automatically:
-#   - ~/horus/HORUS
+#   - ~/softmata/horus
 #   - /horus
 #   - /opt/horus
 #   - /usr/local/horus

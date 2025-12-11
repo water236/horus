@@ -386,6 +386,45 @@ enum Commands {
         command: DriversCommands,
     },
 
+    /// Deploy project to a remote robot
+    Deploy {
+        /// Target host (user@host or configured target name)
+        #[arg(required_unless_present = "list")]
+        target: Option<String>,
+
+        /// Remote directory to deploy to (default: ~/horus_deploy)
+        #[arg(short = 'd', long = "dir")]
+        remote_dir: Option<String>,
+
+        /// Target architecture (aarch64, armv7, x86_64, native)
+        #[arg(short = 'a', long = "arch")]
+        arch: Option<String>,
+
+        /// Run the project after deploying
+        #[arg(short = 'r', long = "run")]
+        run_after: bool,
+
+        /// Build in debug mode instead of release
+        #[arg(long = "debug")]
+        debug: bool,
+
+        /// SSH port (default: 22)
+        #[arg(short = 'p', long = "port", default_value = "22")]
+        port: u16,
+
+        /// SSH identity file
+        #[arg(short = 'i', long = "identity")]
+        identity: Option<PathBuf>,
+
+        /// Show what would be done without actually doing it
+        #[arg(short = 'n', long = "dry-run")]
+        dry_run: bool,
+
+        /// List configured deployment targets
+        #[arg(long = "list")]
+        list: bool,
+    },
+
     /// Add a package, driver, or plugin (smart auto-detection)
     Add {
         /// Package/driver/plugin name to add
@@ -698,6 +737,46 @@ enum RecordCommands {
         #[arg(short = 'f', long = "format", default_value = "json")]
         format: String,
     },
+
+    /// Inject recorded node(s) into a new scheduler with live code
+    ///
+    /// This allows mixing recorded data with live processing nodes.
+    /// Useful for testing algorithms with recorded sensor data without
+    /// needing the physical hardware connected.
+    ///
+    /// Example: horus record inject my_session --nodes camera_node --script process.rs
+    Inject {
+        /// Session name containing the recorded nodes
+        session: String,
+
+        /// Node names to inject (comma-separated, or use --all)
+        #[arg(short = 'n', long = "nodes", value_delimiter = ',')]
+        nodes: Vec<String>,
+
+        /// Inject all nodes from the session
+        #[arg(long = "all")]
+        all: bool,
+
+        /// Rust script file containing live nodes to run alongside
+        #[arg(short = 's', long = "script")]
+        script: Option<PathBuf>,
+
+        /// Start at specific tick
+        #[arg(long = "start-tick")]
+        start_tick: Option<u64>,
+
+        /// Stop at specific tick
+        #[arg(long = "stop-tick")]
+        stop_tick: Option<u64>,
+
+        /// Playback speed multiplier
+        #[arg(long = "speed", default_value = "1.0")]
+        speed: f64,
+
+        /// Loop the recording (restart when finished)
+        #[arg(long = "loop")]
+        loop_playback: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -908,6 +987,21 @@ fn parse_override(s: &str) -> Result<(String, String, String), String> {
     ))
 }
 
+/// Parse a hex string (without 0x prefix) into bytes
+fn parse_hex_string(s: &str) -> Result<Vec<u8>, String> {
+    if s.len() % 2 != 0 {
+        return Err("Hex string must have even length".to_string());
+    }
+
+    (0..s.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&s[i..i + 2], 16)
+                .map_err(|e| format!("Invalid hex at position {}: {}", i, e))
+        })
+        .collect()
+}
+
 // SimCommands enum removed - sim now uses flags directly with 3D as default
 
 fn main() {
@@ -940,6 +1034,7 @@ fn main() {
                 | "sim2d"
                 | "sim3d"
                 | "drivers"
+                | "deploy"
                 | "record"
                 | "completion"
                 | "help"
@@ -3580,7 +3675,7 @@ except ImportError as e:
                 .ok()
                 .or_else(|| {
                     dirs::home_dir()
-                        .map(|h| h.join(".horus/cache/HORUS").to_string_lossy().to_string())
+                        .map(|h| h.join(".horus/cache/horus").to_string_lossy().to_string())
                 })
                 .unwrap_or_else(|| ".".to_string());
 
@@ -3729,7 +3824,7 @@ except ImportError as e:
                 .ok()
                 .or_else(|| {
                     dirs::home_dir()
-                        .map(|h| h.join(".horus/cache/HORUS").to_string_lossy().to_string())
+                        .map(|h| h.join(".horus/cache/horus").to_string_lossy().to_string())
                 })
                 .unwrap_or_else(|| ".".to_string());
 
@@ -3804,6 +3899,31 @@ except ImportError as e:
             }
 
             Ok(())
+        }
+
+        Commands::Deploy {
+            target,
+            remote_dir,
+            arch,
+            run_after,
+            debug,
+            port,
+            identity,
+            dry_run,
+            list,
+        } => {
+            if list {
+                commands::deploy::list_targets()
+            } else if let Some(target) = target {
+                commands::deploy::run_deploy(
+                    &target, remote_dir, arch, run_after, !debug, // release = !debug
+                    port, identity, dry_run,
+                )
+            } else {
+                Err(HorusError::Config(
+                    "Target is required for deploy".to_string(),
+                ))
+            }
         }
 
         Commands::Drivers { command } => {
@@ -4619,30 +4739,101 @@ except ImportError as e:
                     speed,
                     overrides,
                 } => {
-                    println!("{} Replay functionality", "[INFO]".cyan());
-                    println!("       Recording: {}", recording);
-                    if let Some(start) = start_tick {
-                        println!("       Start tick: {}", start);
-                    }
-                    if let Some(stop) = stop_tick {
-                        println!("       Stop tick: {}", stop);
-                    }
-                    println!("       Speed: {}x", speed);
-                    if !overrides.is_empty() {
-                        println!("       Overrides:");
-                        for (node, output, value) in &overrides {
-                            println!("         {}.{} = {}", node, output, value);
+                    use horus_core::Scheduler;
+                    use std::path::PathBuf;
+
+                    // Resolve the recording path - could be a direct path or a session name
+                    let scheduler_path = if PathBuf::from(&recording).exists() {
+                        // Direct path to recording file
+                        PathBuf::from(&recording)
+                    } else {
+                        // Treat as session name - find the scheduler recording
+                        let recordings =
+                            manager.get_session_recordings(&recording).map_err(|e| {
+                                HorusError::Internal(format!(
+                                    "Failed to get session '{}': {}",
+                                    recording, e
+                                ))
+                            })?;
+
+                        if recordings.is_empty() {
+                            return Err(HorusError::Internal(format!(
+                                "Session '{}' not found or has no recordings",
+                                recording
+                            )));
                         }
-                    }
-                    println!("\n       To replay programmatically:");
+
+                        // Find the scheduler recording (file starting with "scheduler@")
+                        recordings
+                            .iter()
+                            .find(|p| {
+                                p.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .map(|n| n.starts_with("scheduler@"))
+                                    .unwrap_or(false)
+                            })
+                            .cloned()
+                            .ok_or_else(|| {
+                                HorusError::Internal(format!(
+                                    "No scheduler recording found in session '{}'",
+                                    recording
+                                ))
+                            })?
+                    };
+
                     println!(
-                        "       let scheduler = Scheduler::replay_from(PathBuf::from(\"{}\"))?;",
-                        recording
+                        "{} Loading recording from: {}",
+                        "[REPLAY]".cyan(),
+                        scheduler_path.display()
                     );
-                    if let Some(tick) = start_tick {
-                        println!("           .start_at_tick({});", tick);
+
+                    // Load the scheduler from recording
+                    let mut scheduler = Scheduler::replay_from(scheduler_path)?;
+
+                    // Apply start tick if specified
+                    if let Some(start) = start_tick {
+                        scheduler = scheduler.start_at_tick(start);
                     }
-                    println!("       scheduler.run();");
+
+                    // Apply stop tick if specified
+                    if let Some(stop) = stop_tick {
+                        scheduler = scheduler.stop_at_tick(stop);
+                        println!("{} Will stop at tick {}", "[REPLAY]".cyan(), stop);
+                    }
+
+                    // Apply speed multiplier
+                    if (speed - 1.0).abs() > f64::EPSILON {
+                        scheduler = scheduler.with_replay_speed(speed);
+                        println!("{} Playback speed: {}x", "[REPLAY]".cyan(), speed);
+                    }
+
+                    // Apply overrides
+                    for (node, output, value_str) in &overrides {
+                        // Parse the value string into bytes
+                        // Support formats: hex (0x...), decimal numbers, or raw strings
+                        let value_bytes = if value_str.starts_with("0x") {
+                            // Hex format - parse manually without hex crate
+                            parse_hex_string(&value_str[2..])
+                                .unwrap_or_else(|_| value_str.as_bytes().to_vec())
+                        } else if let Ok(num) = value_str.parse::<f64>() {
+                            // Float number
+                            num.to_le_bytes().to_vec()
+                        } else if let Ok(num) = value_str.parse::<i64>() {
+                            // Integer number
+                            num.to_le_bytes().to_vec()
+                        } else {
+                            // Raw string bytes
+                            value_str.as_bytes().to_vec()
+                        };
+                        scheduler = scheduler.with_override(node, output, value_bytes);
+                    }
+
+                    println!("{} Starting replay...\n", "[REPLAY]".green());
+
+                    // Run the replay
+                    scheduler.run()?;
+
+                    println!("\n{} Replay completed", "[DONE]".green());
                     Ok(())
                 }
 
@@ -4792,13 +4983,272 @@ except ImportError as e:
                         writeln!(file, "}}")?;
 
                         println!("{} Exported to {:?}", "".green(), output);
+                    } else if format == "csv" {
+                        use std::io::Write;
+                        let mut file = std::fs::File::create(&output).map_err(|e| {
+                            HorusError::Internal(format!("Failed to create output file: {}", e))
+                        })?;
+
+                        // Write CSV header
+                        writeln!(
+                            file,
+                            "node_name,node_id,tick,timestamp_us,input_count,output_count,outputs"
+                        )?;
+
+                        // Process each recording
+                        for path in &recordings {
+                            if let Ok(recording) = horus_core::scheduling::NodeRecording::load(path)
+                            {
+                                // Skip scheduler recordings (they have different structure)
+                                if recording.node_name.starts_with("scheduler") {
+                                    continue;
+                                }
+
+                                for snapshot in &recording.snapshots {
+                                    // Serialize outputs as hex string for CSV
+                                    let outputs_str: Vec<String> = snapshot
+                                        .outputs
+                                        .iter()
+                                        .map(|(k, v)| {
+                                            let hex: String =
+                                                v.iter().map(|b| format!("{:02x}", b)).collect();
+                                            format!("{}={}", k, hex)
+                                        })
+                                        .collect();
+
+                                    writeln!(
+                                        file,
+                                        "{},{},{},{},{},{},\"{}\"",
+                                        recording.node_name,
+                                        recording.node_id,
+                                        snapshot.tick,
+                                        snapshot.timestamp_us,
+                                        snapshot.inputs.len(),
+                                        snapshot.outputs.len(),
+                                        outputs_str.join(";")
+                                    )?;
+                                }
+                            }
+                        }
+
+                        println!("{} Exported to {:?} (CSV format)", "".green(), output);
                     } else {
                         println!(
-                            "{} Format '{}' not yet supported",
+                            "{} Format '{}' not supported. Use 'json' or 'csv'.",
                             "[WARN]".yellow(),
                             format
                         );
                     }
+                    Ok(())
+                }
+
+                RecordCommands::Inject {
+                    session,
+                    nodes,
+                    all,
+                    script,
+                    start_tick,
+                    stop_tick,
+                    speed,
+                    loop_playback,
+                } => {
+                    use horus_core::Scheduler;
+
+                    println!(
+                        "{} Injecting recorded nodes from session '{}'",
+                        "[INJECT]".cyan(),
+                        session
+                    );
+
+                    // Get all recordings from the session
+                    let recordings = manager.get_session_recordings(&session).map_err(|e| {
+                        HorusError::Internal(format!("Failed to load session '{}': {}", session, e))
+                    })?;
+
+                    if recordings.is_empty() {
+                        return Err(HorusError::Internal(format!(
+                            "Session '{}' not found or has no recordings",
+                            session
+                        )));
+                    }
+
+                    // Create a new scheduler for hybrid execution
+                    let mut scheduler = Scheduler::new().with_name(&format!("Inject({})", session));
+
+                    // Filter and add replay nodes
+                    let mut injected_count = 0;
+                    for path in &recordings {
+                        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+                        // Skip scheduler recordings
+                        if filename.starts_with("scheduler@") {
+                            continue;
+                        }
+
+                        // Extract node name from filename (format: node_name@id.horus)
+                        let node_name = filename.split('@').next().unwrap_or("");
+
+                        // Check if we should inject this node
+                        let should_inject = all || nodes.iter().any(|n| n == node_name);
+
+                        if should_inject {
+                            match scheduler.add_replay(path.clone(), 0) {
+                                Ok(_) => {
+                                    println!("  {} Injected '{}'", "✓".green(), node_name);
+                                    injected_count += 1;
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "  {} Failed to inject '{}': {}",
+                                        "✗".red(),
+                                        node_name,
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    if injected_count == 0 {
+                        return Err(HorusError::Internal(
+                            "No nodes were injected. Check node names or use --all".to_string(),
+                        ));
+                    }
+
+                    // Apply start tick if specified
+                    if let Some(start) = start_tick {
+                        scheduler = scheduler.start_at_tick(start);
+                    }
+
+                    // Apply stop tick if specified
+                    if let Some(stop) = stop_tick {
+                        scheduler = scheduler.stop_at_tick(stop);
+                    }
+
+                    // Apply speed multiplier
+                    if (speed - 1.0).abs() > f64::EPSILON {
+                        scheduler = scheduler.with_replay_speed(speed);
+                        println!("{} Playback speed: {}x", "[INJECT]".cyan(), speed);
+                    }
+
+                    // If a script is provided, compile and run it with the injected nodes
+                    if let Some(script_path) = &script {
+                        if !script_path.exists() {
+                            return Err(HorusError::Internal(format!(
+                                "Script file not found: {}",
+                                script_path.display()
+                            )));
+                        }
+
+                        println!(
+                            "\n{} Compiling script: {}",
+                            "[INJECT]".cyan(),
+                            script_path.display()
+                        );
+
+                        // Use the existing run infrastructure to compile and execute
+                        // We need to set up the environment for injection
+                        std::env::set_var("HORUS_INJECT_SESSION", &session);
+                        std::env::set_var(
+                            "HORUS_INJECT_NODES",
+                            if all {
+                                "*".to_string()
+                            } else {
+                                nodes.join(",")
+                            },
+                        );
+
+                        // For now, just inform user how to properly use injection with scripts
+                        // Full integration would require modifying the `horus run` command
+                        println!(
+                            "\n{} To run a script with injected recordings, use:",
+                            "[INFO]".cyan()
+                        );
+                        let inject_arg = if all {
+                            "--inject-all".to_string()
+                        } else {
+                            format!("--inject-nodes {}", nodes.join(","))
+                        };
+                        println!(
+                            "       horus run {} --inject {} {}",
+                            script_path.display(),
+                            session,
+                            inject_arg
+                        );
+                        println!(
+                            "\n{} Running injected nodes only for now...\n",
+                            "[INJECT]".yellow()
+                        );
+                    } else {
+                        println!(
+                            "\n{} Running {} injected node(s)...\n",
+                            "[INJECT]".green(),
+                            injected_count
+                        );
+                    }
+
+                    // Handle loop playback
+                    if loop_playback {
+                        println!(
+                            "{} Loop mode: Recording will restart when finished",
+                            "[INJECT]".cyan()
+                        );
+
+                        // Run in a loop until interrupted
+                        loop {
+                            // Reset tick counter for new iteration
+                            scheduler = scheduler.start_at_tick(start_tick.unwrap_or(0));
+
+                            match scheduler.run() {
+                                Ok(()) => {
+                                    println!(
+                                        "\n{} Recording finished, restarting...\n",
+                                        "[LOOP]".cyan()
+                                    );
+
+                                    // Recreate scheduler for next iteration
+                                    scheduler =
+                                        Scheduler::new().with_name(&format!("Inject({})", session));
+
+                                    // Re-inject nodes
+                                    for path in &recordings {
+                                        let filename =
+                                            path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                                        if filename.starts_with("scheduler@") {
+                                            continue;
+                                        }
+                                        let node_name = filename.split('@').next().unwrap_or("");
+                                        let should_inject =
+                                            all || nodes.iter().any(|n| n == node_name);
+                                        if should_inject {
+                                            let _ = scheduler.add_replay(path.clone(), 0);
+                                        }
+                                    }
+
+                                    // Re-apply settings
+                                    if let Some(start) = start_tick {
+                                        scheduler = scheduler.start_at_tick(start);
+                                    }
+                                    if let Some(stop) = stop_tick {
+                                        scheduler = scheduler.stop_at_tick(stop);
+                                    }
+                                    if (speed - 1.0).abs() > f64::EPSILON {
+                                        scheduler = scheduler.with_replay_speed(speed);
+                                    }
+                                }
+                                Err(e) => {
+                                    // If interrupted (Ctrl+C), exit loop
+                                    println!("\n{} Loop interrupted: {}", "[DONE]".yellow(), e);
+                                    break;
+                                }
+                            }
+                        }
+                    } else {
+                        // Single run
+                        scheduler.run()?;
+                        println!("\n{} Injection replay completed", "[DONE]".green());
+                    }
+
                     Ok(())
                 }
             }

@@ -9,15 +9,15 @@
 
 /* Light Mode (default) */
 :root {
-  /* Background colors */
-  --bg: #ffffff;
-  --bg-subtle: #fafafa;
-  --bg-muted: #f5f5f5;
-  --bg-elevated: #ffffff;
-  --dark-bg: #ffffff;
-  --card-bg: #fafafa;
-  --surface: #f5f5f5;
-  --surface-hover: #eeeeee;
+  /* Background colors - warm cream tones */
+  --bg: #f8f7f4;
+  --bg-subtle: #f3f2ef;
+  --bg-muted: #eeedea;
+  --bg-elevated: #faf9f6;
+  --dark-bg: #f8f7f4;
+  --card-bg: #f3f2ef;
+  --surface: #eeedea;
+  --surface-hover: #e5e4e1;
 
   /* Text colors */
   --text: #1a1a1a;
@@ -28,9 +28,9 @@
   --text-tertiary: #888888;
 
   /* Border colors */
-  --border: #e0e0e0;
+  --border: #dddcd8;
   --border-dark: #000000;
-  --border-hover: #cccccc;
+  --border-hover: #c9c8c4;
 
   /* Accent - black in light mode */
   --accent: #000000;
@@ -45,9 +45,9 @@
   --gray: #666666;
 
   /* Code colors */
-  --code-bg: #f5f5f5;
+  --code-bg: #eeedea;
   --code-text: #1a1a1a;
-  --code-border: #e0e0e0;
+  --code-border: #dddcd8;
 
   /* Typography */
   --font-sans: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;

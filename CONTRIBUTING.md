@@ -224,7 +224,7 @@ Fixes #123
 ### Code Organization
 
 ```
-HORUS/
+horus/
 ├── horus_core/         # Core IPC implementation
 ├── horus_macros/       # Procedural macros
 ├── horus_py/           # Python bindings

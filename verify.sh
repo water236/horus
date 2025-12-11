@@ -1,5 +1,5 @@
 #!/bin/bash
-# HORUS Installation Verification Script v2.0.0
+# HORUS Installation Verification Script v2.1.0
 # Comprehensive, systematic, complete verification
 # Checks: System, Binaries, Libraries, Cache, Source, Examples, Network, GPU
 
@@ -204,7 +204,7 @@ fi
 
 echo ""
 echo -e "${BLUE}╔═════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║ ${NC}${WHITE}HORUS Installation Verification v2.0.0${NC}  ${BLUE}║${NC}"
+echo -e "${BLUE}║ ${NC}${WHITE}HORUS Installation Verification v2.1.0${NC}  ${BLUE}║${NC}"
 echo -e "${BLUE}║ ${NC}${CYAN}Comprehensive • Systematic • Complete${NC}   ${BLUE}║${NC}"
 echo -e "${BLUE}╚═════════════════════════════════════════╝${NC}"
 echo ""
@@ -224,22 +224,41 @@ section "1. System Requirements"
 info "Operating System: $OS_TYPE"
 [ -n "$OS_DISTRO" ] && [ "$OS_DISTRO" != "unknown" ] && info "Distribution: $OS_DISTRO"
 
-# Rust
-# Required Rust version (must match install.sh)
+# ============================================================================
+# VERSION REQUIREMENTS (synchronized with install.sh v2.5.0)
+# ============================================================================
+# Rust version range
 REQUIRED_RUST_MAJOR=1
 REQUIRED_RUST_MINOR=85
 REQUIRED_RUST_VERSION="${REQUIRED_RUST_MAJOR}.${REQUIRED_RUST_MINOR}"
+MAX_TESTED_RUST_MAJOR=1
+MAX_TESTED_RUST_MINOR=87
+MAX_TESTED_RUST_VERSION="${MAX_TESTED_RUST_MAJOR}.${MAX_TESTED_RUST_MINOR}"
 
+# Python version range
+REQUIRED_PYTHON_MAJOR=3
+REQUIRED_PYTHON_MINOR=9
+REQUIRED_PYTHON_VERSION="${REQUIRED_PYTHON_MAJOR}.${REQUIRED_PYTHON_MINOR}"
+MAX_TESTED_PYTHON_MAJOR=3
+MAX_TESTED_PYTHON_MINOR=13
+MAX_TESTED_PYTHON_VERSION="${MAX_TESTED_PYTHON_MAJOR}.${MAX_TESTED_PYTHON_MINOR}"
+
+# Rust check with floor AND ceiling
 if command -v rustc &> /dev/null; then
     RUST_VERSION=$(rustc --version | awk '{print $2}')
     RUST_MAJOR=$(echo $RUST_VERSION | cut -d'.' -f1)
     RUST_MINOR=$(echo $RUST_VERSION | cut -d'.' -f2)
 
-    if [ "$RUST_MAJOR" -gt "$REQUIRED_RUST_MAJOR" ] || \
-       ([ "$RUST_MAJOR" -eq "$REQUIRED_RUST_MAJOR" ] && [ "$RUST_MINOR" -ge "$REQUIRED_RUST_MINOR" ]); then
-        pass "Rust $RUST_VERSION (>= $REQUIRED_RUST_VERSION required)"
-    else
+    # Check floor (minimum)
+    if [ "$RUST_MAJOR" -lt "$REQUIRED_RUST_MAJOR" ] || \
+       ([ "$RUST_MAJOR" -eq "$REQUIRED_RUST_MAJOR" ] && [ "$RUST_MINOR" -lt "$REQUIRED_RUST_MINOR" ]); then
         fail "Rust $RUST_VERSION (< $REQUIRED_RUST_VERSION, please update via: rustup update stable)"
+    # Check ceiling (maximum tested)
+    elif [ "$RUST_MAJOR" -gt "$MAX_TESTED_RUST_MAJOR" ] || \
+         ([ "$RUST_MAJOR" -eq "$MAX_TESTED_RUST_MAJOR" ] && [ "$RUST_MINOR" -gt "$MAX_TESTED_RUST_MINOR" ]); then
+        warn "Rust $RUST_VERSION (NEWER than tested $MAX_TESTED_RUST_VERSION - may have API changes)"
+    else
+        pass "Rust $RUST_VERSION (within tested range $REQUIRED_RUST_VERSION - $MAX_TESTED_RUST_VERSION)"
     fi
 else
     fail "Rust not installed (https://rustup.rs/)"
@@ -280,25 +299,25 @@ else
     warn "cmake not found (may be needed for some builds)"
 fi
 
-# Python3 (for horus_py)
-# Required Python version (must match pyproject.toml)
-REQUIRED_PYTHON_MAJOR=3
-REQUIRED_PYTHON_MINOR=9
-REQUIRED_PYTHON_VERSION="${REQUIRED_PYTHON_MAJOR}.${REQUIRED_PYTHON_MINOR}"
-
+# Python3 check with floor AND ceiling (for horus_py)
 if command -v python3 &> /dev/null; then
     PY_VERSION=$(python3 --version 2>&1 | awk '{print $2}')
     PY_MAJOR=$(echo $PY_VERSION | cut -d'.' -f1)
     PY_MINOR=$(echo $PY_VERSION | cut -d'.' -f2)
 
-    if [ "$PY_MAJOR" -gt "$REQUIRED_PYTHON_MAJOR" ] || \
-       ([ "$PY_MAJOR" -eq "$REQUIRED_PYTHON_MAJOR" ] && [ "$PY_MINOR" -ge "$REQUIRED_PYTHON_MINOR" ]); then
-        pass "Python $PY_VERSION (>= $REQUIRED_PYTHON_VERSION required for bindings)"
-    else
+    # Check floor (minimum)
+    if [ "$PY_MAJOR" -lt "$REQUIRED_PYTHON_MAJOR" ] || \
+       ([ "$PY_MAJOR" -eq "$REQUIRED_PYTHON_MAJOR" ] && [ "$PY_MINOR" -lt "$REQUIRED_PYTHON_MINOR" ]); then
         warn "Python $PY_VERSION (< $REQUIRED_PYTHON_VERSION, horus_py requires 3.9+)"
+    # Check ceiling (maximum tested)
+    elif [ "$PY_MAJOR" -gt "$MAX_TESTED_PYTHON_MAJOR" ] || \
+         ([ "$PY_MAJOR" -eq "$MAX_TESTED_PYTHON_MAJOR" ] && [ "$PY_MINOR" -gt "$MAX_TESTED_PYTHON_MINOR" ]); then
+        warn "Python $PY_VERSION (NEWER than tested $MAX_TESTED_PYTHON_VERSION - PyO3 wheel may fail)"
+    else
+        pass "Python $PY_VERSION (within tested range $REQUIRED_PYTHON_VERSION - $MAX_TESTED_PYTHON_VERSION)"
     fi
 else
-    info "Python3 not found (optional for horus_py, requires >= $REQUIRED_PYTHON_VERSION)"
+    info "Python3 not found (optional for horus_py, requires $REQUIRED_PYTHON_VERSION - $MAX_TESTED_PYTHON_VERSION)"
 fi
 
 #=====================================

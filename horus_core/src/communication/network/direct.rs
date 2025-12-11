@@ -10,9 +10,9 @@
 /// - Zero-allocation buffer pooling
 /// - No router middleman = lower latency (~5-15µs)
 use crate::error::HorusResult;
-use log::{error, warn};
 use crossbeam::channel::{bounded, Receiver, Sender};
 use crossbeam::queue::SegQueue;
+use log::{error, warn};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

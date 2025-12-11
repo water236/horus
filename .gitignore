@@ -64,7 +64,10 @@ yarn-error.log*
 *.swp
 *.swo
 *~
+
+# Claude Code
 .claude/
+.claude
 
 # OS
 .DS_Store
@@ -75,5 +78,3 @@ Thumbs.db
 .cache/
 *.cache
 
-# Documentation (only root-level docs/, not docs-site/content/docs/)
-/docs/

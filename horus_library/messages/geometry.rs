@@ -379,3 +379,405 @@ unsafe impl horus_core::communication::PodMessage for Vector3 {}
 unsafe impl bytemuck::Pod for Quaternion {}
 unsafe impl bytemuck::Zeroable for Quaternion {}
 unsafe impl horus_core::communication::PodMessage for Quaternion {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f64::consts::PI;
+
+    // ============================================================================
+    // Twist Tests
+    // ============================================================================
+
+    #[test]
+    fn test_twist_new() {
+        let twist = Twist::new([1.0, 2.0, 3.0], [0.1, 0.2, 0.3]);
+        assert_eq!(twist.linear[0], 1.0);
+        assert_eq!(twist.linear[1], 2.0);
+        assert_eq!(twist.linear[2], 3.0);
+        assert_eq!(twist.angular[0], 0.1);
+        assert_eq!(twist.angular[1], 0.2);
+        assert_eq!(twist.angular[2], 0.3);
+        assert!(twist.timestamp > 0);
+    }
+
+    #[test]
+    fn test_twist_new_2d() {
+        let twist = Twist::new_2d(1.5, 0.5);
+        assert_eq!(twist.linear[0], 1.5);
+        assert_eq!(twist.linear[1], 0.0);
+        assert_eq!(twist.linear[2], 0.0);
+        assert_eq!(twist.angular[0], 0.0);
+        assert_eq!(twist.angular[1], 0.0);
+        assert_eq!(twist.angular[2], 0.5);
+    }
+
+    #[test]
+    fn test_twist_stop() {
+        let twist = Twist::stop();
+        assert_eq!(twist.linear, [0.0, 0.0, 0.0]);
+        assert_eq!(twist.angular, [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_twist_is_valid() {
+        let valid = Twist::new([1.0, 2.0, 3.0], [0.1, 0.2, 0.3]);
+        assert!(valid.is_valid());
+
+        let invalid = Twist::new([f64::INFINITY, 0.0, 0.0], [0.0; 3]);
+        assert!(!invalid.is_valid());
+
+        let nan = Twist::new([f64::NAN, 0.0, 0.0], [0.0; 3]);
+        assert!(!nan.is_valid());
+    }
+
+    #[test]
+    fn test_twist_serialization() {
+        let twist = Twist::new([1.0, 2.0, 3.0], [0.1, 0.2, 0.3]);
+        let serialized = serde_json::to_string(&twist).unwrap();
+        let deserialized: Twist = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(twist.linear, deserialized.linear);
+        assert_eq!(twist.angular, deserialized.angular);
+    }
+
+    // ============================================================================
+    // Pose2D Tests
+    // ============================================================================
+
+    #[test]
+    fn test_pose2d_new() {
+        let pose = Pose2D::new(1.0, 2.0, 0.5);
+        assert_eq!(pose.x, 1.0);
+        assert_eq!(pose.y, 2.0);
+        assert_eq!(pose.theta, 0.5);
+        assert!(pose.timestamp > 0);
+    }
+
+    #[test]
+    fn test_pose2d_origin() {
+        let pose = Pose2D::origin();
+        assert_eq!(pose.x, 0.0);
+        assert_eq!(pose.y, 0.0);
+        assert_eq!(pose.theta, 0.0);
+    }
+
+    #[test]
+    fn test_pose2d_distance_to() {
+        let p1 = Pose2D::new(0.0, 0.0, 0.0);
+        let p2 = Pose2D::new(3.0, 4.0, 0.0);
+        assert!((p1.distance_to(&p2) - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_pose2d_normalize_angle() {
+        let mut pose = Pose2D::new(0.0, 0.0, 3.0 * PI);
+        pose.normalize_angle();
+        assert!(pose.theta >= -PI && pose.theta <= PI);
+
+        let mut pose2 = Pose2D::new(0.0, 0.0, -3.0 * PI);
+        pose2.normalize_angle();
+        assert!(pose2.theta >= -PI && pose2.theta <= PI);
+    }
+
+    #[test]
+    fn test_pose2d_is_valid() {
+        let valid = Pose2D::new(1.0, 2.0, 0.5);
+        assert!(valid.is_valid());
+
+        let invalid = Pose2D::new(f64::INFINITY, 0.0, 0.0);
+        assert!(!invalid.is_valid());
+    }
+
+    #[test]
+    fn test_pose2d_serialization() {
+        let pose = Pose2D::new(1.0, 2.0, 0.5);
+        let serialized = serde_json::to_string(&pose).unwrap();
+        let deserialized: Pose2D = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(pose.x, deserialized.x);
+        assert_eq!(pose.y, deserialized.y);
+        assert_eq!(pose.theta, deserialized.theta);
+    }
+
+    // ============================================================================
+    // Transform Tests
+    // ============================================================================
+
+    #[test]
+    fn test_transform_new() {
+        let tf = Transform::new([1.0, 2.0, 3.0], [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(tf.translation, [1.0, 2.0, 3.0]);
+        assert_eq!(tf.rotation, [0.0, 0.0, 0.0, 1.0]);
+        assert!(tf.timestamp > 0);
+    }
+
+    #[test]
+    fn test_transform_identity() {
+        let tf = Transform::identity();
+        assert_eq!(tf.translation, [0.0, 0.0, 0.0]);
+        assert_eq!(tf.rotation, [0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn test_transform_from_pose_2d() {
+        let pose = Pose2D::new(1.0, 2.0, 0.0);
+        let tf = Transform::from_pose_2d(&pose);
+        assert_eq!(tf.translation[0], 1.0);
+        assert_eq!(tf.translation[1], 2.0);
+        assert_eq!(tf.translation[2], 0.0);
+        // Identity quaternion for theta=0
+        assert!((tf.rotation[3] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_transform_is_valid() {
+        let valid = Transform::identity();
+        assert!(valid.is_valid());
+
+        let invalid_translation = Transform::new([f64::INFINITY, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]);
+        assert!(!invalid_translation.is_valid());
+
+        let unnormalized = Transform::new([0.0; 3], [1.0, 1.0, 1.0, 1.0]);
+        assert!(!unnormalized.is_valid()); // Quaternion not normalized
+    }
+
+    #[test]
+    fn test_transform_normalize_rotation() {
+        let mut tf = Transform::new([0.0; 3], [1.0, 1.0, 1.0, 1.0]);
+        tf.normalize_rotation();
+        let norm = tf.rotation.iter().map(|v| v * v).sum::<f64>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_transform_serialization() {
+        let tf = Transform::identity();
+        let serialized = serde_json::to_string(&tf).unwrap();
+        let deserialized: Transform = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(tf.translation, deserialized.translation);
+        assert_eq!(tf.rotation, deserialized.rotation);
+    }
+
+    // ============================================================================
+    // Point3 Tests
+    // ============================================================================
+
+    #[test]
+    fn test_point3_new() {
+        let p = Point3::new(1.0, 2.0, 3.0);
+        assert_eq!(p.x, 1.0);
+        assert_eq!(p.y, 2.0);
+        assert_eq!(p.z, 3.0);
+    }
+
+    #[test]
+    fn test_point3_origin() {
+        let p = Point3::origin();
+        assert_eq!(p.x, 0.0);
+        assert_eq!(p.y, 0.0);
+        assert_eq!(p.z, 0.0);
+    }
+
+    #[test]
+    fn test_point3_distance_to() {
+        let p1 = Point3::origin();
+        let p2 = Point3::new(1.0, 2.0, 2.0);
+        assert!((p1.distance_to(&p2) - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_point3_serialization() {
+        let p = Point3::new(1.0, 2.0, 3.0);
+        let serialized = serde_json::to_string(&p).unwrap();
+        let deserialized: Point3 = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(p.x, deserialized.x);
+        assert_eq!(p.y, deserialized.y);
+        assert_eq!(p.z, deserialized.z);
+    }
+
+    // ============================================================================
+    // Vector3 Tests
+    // ============================================================================
+
+    #[test]
+    fn test_vector3_new() {
+        let v = Vector3::new(1.0, 2.0, 3.0);
+        assert_eq!(v.x, 1.0);
+        assert_eq!(v.y, 2.0);
+        assert_eq!(v.z, 3.0);
+    }
+
+    #[test]
+    fn test_vector3_zero() {
+        let v = Vector3::zero();
+        assert_eq!(v.x, 0.0);
+        assert_eq!(v.y, 0.0);
+        assert_eq!(v.z, 0.0);
+    }
+
+    #[test]
+    fn test_vector3_magnitude() {
+        let v = Vector3::new(3.0, 4.0, 0.0);
+        assert!((v.magnitude() - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_vector3_normalize() {
+        let mut v = Vector3::new(3.0, 4.0, 0.0);
+        v.normalize();
+        assert!((v.magnitude() - 1.0).abs() < 1e-10);
+        assert!((v.x - 0.6).abs() < 1e-10);
+        assert!((v.y - 0.8).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_vector3_dot() {
+        let v1 = Vector3::new(1.0, 2.0, 3.0);
+        let v2 = Vector3::new(4.0, 5.0, 6.0);
+        assert!((v1.dot(&v2) - 32.0).abs() < 1e-10); // 1*4 + 2*5 + 3*6 = 32
+    }
+
+    #[test]
+    fn test_vector3_cross() {
+        let i = Vector3::new(1.0, 0.0, 0.0);
+        let j = Vector3::new(0.0, 1.0, 0.0);
+        let k = i.cross(&j);
+        assert!((k.x - 0.0).abs() < 1e-10);
+        assert!((k.y - 0.0).abs() < 1e-10);
+        assert!((k.z - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_vector3_serialization() {
+        let v = Vector3::new(1.0, 2.0, 3.0);
+        let serialized = serde_json::to_string(&v).unwrap();
+        let deserialized: Vector3 = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(v.x, deserialized.x);
+        assert_eq!(v.y, deserialized.y);
+        assert_eq!(v.z, deserialized.z);
+    }
+
+    // ============================================================================
+    // Quaternion Tests
+    // ============================================================================
+
+    #[test]
+    fn test_quaternion_new() {
+        let q = Quaternion::new(0.0, 0.0, 0.0, 1.0);
+        assert_eq!(q.x, 0.0);
+        assert_eq!(q.y, 0.0);
+        assert_eq!(q.z, 0.0);
+        assert_eq!(q.w, 1.0);
+    }
+
+    #[test]
+    fn test_quaternion_identity() {
+        let q = Quaternion::identity();
+        assert_eq!(q.x, 0.0);
+        assert_eq!(q.y, 0.0);
+        assert_eq!(q.z, 0.0);
+        assert_eq!(q.w, 1.0);
+    }
+
+    #[test]
+    fn test_quaternion_default() {
+        let q = Quaternion::default();
+        assert_eq!(q.w, 1.0);
+    }
+
+    #[test]
+    fn test_quaternion_from_euler_identity() {
+        let q = Quaternion::from_euler(0.0, 0.0, 0.0);
+        assert!((q.x - 0.0).abs() < 1e-10);
+        assert!((q.y - 0.0).abs() < 1e-10);
+        assert!((q.z - 0.0).abs() < 1e-10);
+        assert!((q.w - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_quaternion_from_euler_yaw_90() {
+        let q = Quaternion::from_euler(0.0, 0.0, PI / 2.0);
+        // 90 degree yaw: qz ≈ sin(45°) ≈ 0.707, qw ≈ cos(45°) ≈ 0.707
+        assert!((q.z - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        assert!((q.w - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_quaternion_normalize() {
+        let mut q = Quaternion::new(1.0, 1.0, 1.0, 1.0);
+        q.normalize();
+        let norm = (q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w).sqrt();
+        assert!((norm - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_quaternion_is_valid() {
+        let valid = Quaternion::identity();
+        assert!(valid.is_valid());
+
+        let invalid = Quaternion::new(f64::INFINITY, 0.0, 0.0, 1.0);
+        assert!(!invalid.is_valid());
+    }
+
+    #[test]
+    fn test_quaternion_serialization() {
+        let q = Quaternion::identity();
+        let serialized = serde_json::to_string(&q).unwrap();
+        let deserialized: Quaternion = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(q.x, deserialized.x);
+        assert_eq!(q.y, deserialized.y);
+        assert_eq!(q.z, deserialized.z);
+        assert_eq!(q.w, deserialized.w);
+    }
+
+    // ============================================================================
+    // LogSummary Tests
+    // ============================================================================
+
+    #[test]
+    fn test_twist_log_summary() {
+        let twist = Twist::new_2d(1.0, 0.5);
+        let summary = twist.log_summary();
+        assert!(!summary.is_empty());
+        assert!(summary.contains("linear") || summary.contains("1.0"));
+    }
+
+    #[test]
+    fn test_pose2d_log_summary() {
+        let pose = Pose2D::new(1.0, 2.0, 0.5);
+        let summary = pose.log_summary();
+        assert!(!summary.is_empty());
+    }
+
+    // ============================================================================
+    // Pod Message (bytemuck) Tests
+    // ============================================================================
+
+    #[test]
+    fn test_twist_pod_cast() {
+        let twist = Twist::new_2d(1.5, 0.3);
+        let bytes: &[u8] = bytemuck::bytes_of(&twist);
+        let reconstructed: &Twist = bytemuck::from_bytes(bytes);
+        assert_eq!(twist.linear, reconstructed.linear);
+        assert_eq!(twist.angular, reconstructed.angular);
+    }
+
+    #[test]
+    fn test_pose2d_pod_cast() {
+        let pose = Pose2D::new(1.0, 2.0, 0.5);
+        let bytes: &[u8] = bytemuck::bytes_of(&pose);
+        let reconstructed: &Pose2D = bytemuck::from_bytes(bytes);
+        assert_eq!(pose.x, reconstructed.x);
+        assert_eq!(pose.y, reconstructed.y);
+        assert_eq!(pose.theta, reconstructed.theta);
+    }
+
+    #[test]
+    fn test_vector3_pod_cast() {
+        let v = Vector3::new(1.0, 2.0, 3.0);
+        let bytes: &[u8] = bytemuck::bytes_of(&v);
+        let reconstructed: &Vector3 = bytemuck::from_bytes(bytes);
+        assert_eq!(v.x, reconstructed.x);
+        assert_eq!(v.y, reconstructed.y);
+        assert_eq!(v.z, reconstructed.z);
+    }
+}

@@ -23,7 +23,7 @@ The `horus-mcp` server provides specialized tools for HORUS development. Use the
 ## Project Structure
 
 ```
-HORUS/
+horus/
 ├── horus/           # Main unified crate (re-exports)
 ├── horus_core/      # Core runtime (Node, Hub, Link, Scheduler)
 ├── horus_macros/    # Procedural macros (node!, message!)

@@ -501,3 +501,253 @@ impl<'de> Deserialize<'de> for GenericMessage {
         deserializer.deserialize_struct("GenericMessage", FIELDS, GenericMessageVisitor)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    // ============================================================================
+    // GenericMessage Creation Tests
+    // ============================================================================
+
+    #[test]
+    fn test_generic_message_new_small() {
+        let data = vec![1, 2, 3, 4, 5];
+        let msg = GenericMessage::new(data.clone()).unwrap();
+        assert_eq!(msg.data(), data);
+    }
+
+    #[test]
+    fn test_generic_message_new_inline_boundary() {
+        // Exactly 256 bytes (inline buffer size)
+        let data: Vec<u8> = (0..=255).map(|i| i as u8).collect();
+        let msg = GenericMessage::new(data.clone()).unwrap();
+        assert_eq!(msg.data(), data);
+        assert_eq!(msg.inline_len, 256);
+        assert_eq!(msg.overflow_len, 0);
+    }
+
+    #[test]
+    fn test_generic_message_new_overflow() {
+        // 300 bytes - requires overflow buffer
+        let data: Vec<u8> = (0..300).map(|i| (i % 256) as u8).collect();
+        let msg = GenericMessage::new(data.clone()).unwrap();
+        assert_eq!(msg.data(), data);
+        assert_eq!(msg.inline_len, 256);
+        assert_eq!(msg.overflow_len, 44);
+    }
+
+    #[test]
+    fn test_generic_message_new_max_size() {
+        // Maximum payload size (4096 bytes)
+        let data: Vec<u8> = vec![0xAB; MAX_GENERIC_PAYLOAD];
+        let msg = GenericMessage::new(data.clone()).unwrap();
+        assert_eq!(msg.data().len(), MAX_GENERIC_PAYLOAD);
+    }
+
+    #[test]
+    fn test_generic_message_new_too_large() {
+        // Exceeds maximum - should fail
+        let data: Vec<u8> = vec![0xAB; MAX_GENERIC_PAYLOAD + 1];
+        let result = GenericMessage::new(data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("too large"));
+    }
+
+    #[test]
+    fn test_generic_message_empty() {
+        let msg = GenericMessage::new(vec![]).unwrap();
+        assert!(msg.data().is_empty());
+        assert_eq!(msg.inline_len, 0);
+        assert_eq!(msg.overflow_len, 0);
+    }
+
+    // ============================================================================
+    // GenericMessage Metadata Tests
+    // ============================================================================
+
+    #[test]
+    fn test_generic_message_with_metadata() {
+        let data = vec![1, 2, 3];
+        let msg = GenericMessage::with_metadata(data.clone(), "test_type".to_string()).unwrap();
+        assert_eq!(msg.data(), data);
+        assert_eq!(msg.metadata(), Some("test_type".to_string()));
+    }
+
+    #[test]
+    fn test_generic_message_metadata_none() {
+        let msg = GenericMessage::new(vec![1, 2, 3]).unwrap();
+        assert_eq!(msg.metadata(), None);
+    }
+
+    #[test]
+    fn test_generic_message_metadata_too_large() {
+        let data = vec![1, 2, 3];
+        let long_metadata = "x".repeat(256); // Exceeds 255 byte limit
+        let result = GenericMessage::with_metadata(data, long_metadata);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Metadata too large"));
+    }
+
+    // ============================================================================
+    // GenericMessage Serialization Tests (from_value/to_value)
+    // ============================================================================
+
+    #[test]
+    fn test_generic_message_from_value_hashmap() {
+        let mut data = HashMap::new();
+        data.insert("x", 1.0f64);
+        data.insert("y", 2.0f64);
+
+        let msg = GenericMessage::from_value(&data).unwrap();
+        let restored: HashMap<String, f64> = msg.to_value().unwrap();
+        assert_eq!(restored.get("x"), Some(&1.0));
+        assert_eq!(restored.get("y"), Some(&2.0));
+    }
+
+    #[test]
+    fn test_generic_message_from_value_vec() {
+        let data: Vec<i32> = vec![1, 2, 3, 4, 5];
+        let msg = GenericMessage::from_value(&data).unwrap();
+        let restored: Vec<i32> = msg.to_value().unwrap();
+        assert_eq!(restored, data);
+    }
+
+    #[test]
+    fn test_generic_message_from_value_string() {
+        let data = "hello, world!".to_string();
+        let msg = GenericMessage::from_value(&data).unwrap();
+        let restored: String = msg.to_value().unwrap();
+        assert_eq!(restored, data);
+    }
+
+    #[test]
+    fn test_generic_message_from_value_struct() {
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+        struct TestStruct {
+            name: String,
+            value: f64,
+        }
+
+        let data = TestStruct {
+            name: "test".to_string(),
+            value: 42.5,
+        };
+
+        let msg = GenericMessage::from_value(&data).unwrap();
+        let restored: TestStruct = msg.to_value().unwrap();
+        assert_eq!(restored, data);
+    }
+
+    // ============================================================================
+    // GenericMessage Serde Serialization Tests
+    // ============================================================================
+
+    #[test]
+    fn test_generic_message_json_roundtrip() {
+        let data = vec![1, 2, 3, 4, 5];
+        let msg = GenericMessage::new(data.clone()).unwrap();
+
+        // Serialize to JSON
+        let json = serde_json::to_string(&msg).unwrap();
+
+        // Deserialize back
+        let restored: GenericMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.data(), data);
+    }
+
+    #[test]
+    fn test_generic_message_msgpack_roundtrip() {
+        // Test that GenericMessage can serialize/deserialize arbitrary data using its internal
+        // MessagePack encoding (from_value/to_value), not direct struct serialization
+        let original: Vec<i32> = vec![1, 2, 3, 4, 5];
+        let msg = GenericMessage::from_value(&original).unwrap();
+
+        // The data is stored as MessagePack bytes inside GenericMessage
+        let restored: Vec<i32> = msg.to_value().unwrap();
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn test_generic_message_with_metadata_roundtrip() {
+        let data = vec![10, 20, 30];
+        let msg = GenericMessage::with_metadata(data.clone(), "my_metadata".to_string()).unwrap();
+
+        let json = serde_json::to_string(&msg).unwrap();
+        let restored: GenericMessage = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.data(), data);
+        assert_eq!(restored.metadata(), Some("my_metadata".to_string()));
+    }
+
+    // ============================================================================
+    // GenericMessage LogSummary Tests
+    // ============================================================================
+
+    #[test]
+    fn test_generic_message_log_summary_json() {
+        // Create a message with JSON data
+        let json_data = r#"{"key":"value"}"#;
+        let msg = GenericMessage::new(json_data.as_bytes().to_vec()).unwrap();
+        let summary = msg.log_summary();
+        // Should contain the key-value pair
+        assert!(summary.contains("key") || summary.contains("value") || summary.contains("bytes"));
+    }
+
+    #[test]
+    fn test_generic_message_log_summary_msgpack() {
+        // Create a message with MessagePack data
+        let value: Vec<i32> = vec![1, 2, 3];
+        let msg = GenericMessage::from_value(&value).unwrap();
+        let summary = msg.log_summary();
+        // Should produce some summary
+        assert!(!summary.is_empty());
+    }
+
+    #[test]
+    fn test_generic_message_log_summary_binary() {
+        // Create a message with binary data that's not JSON or MsgPack
+        let binary_data = vec![0xFF, 0xFE, 0xFD, 0xFC];
+        let msg = GenericMessage::new(binary_data).unwrap();
+        let summary = msg.log_summary();
+        eprintln!("DEBUG: log_summary output = '{}'", summary);
+        // Should produce a non-empty summary
+        assert!(!summary.is_empty());
+    }
+
+    #[test]
+    fn test_generic_message_log_summary_large_message() {
+        // Create a large message to test truncation
+        let large_json = format!(r#"{{"data":"{}"}}"#, "x".repeat(300));
+        let msg = GenericMessage::new(large_json.as_bytes().to_vec()).unwrap();
+        let summary = msg.log_summary();
+        // Summary should be truncated
+        assert!(summary.len() <= 300 || summary.contains("..."));
+    }
+
+    // ============================================================================
+    // Edge Case Tests
+    // ============================================================================
+
+    #[test]
+    fn test_generic_message_copy() {
+        let msg = GenericMessage::new(vec![1, 2, 3]).unwrap();
+        let copy = msg;
+        assert_eq!(copy.data(), msg.data());
+    }
+
+    #[test]
+    fn test_generic_message_clone() {
+        let msg = GenericMessage::new(vec![1, 2, 3]).unwrap();
+        let cloned = msg.clone();
+        assert_eq!(cloned.data(), msg.data());
+    }
+
+    #[test]
+    fn test_generic_message_debug() {
+        let msg = GenericMessage::new(vec![1, 2, 3]).unwrap();
+        let debug_str = format!("{:?}", msg);
+        assert!(!debug_str.is_empty());
+    }
+}

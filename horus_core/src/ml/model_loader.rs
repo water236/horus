@@ -3,8 +3,10 @@
 // Utilities for loading ML models from local paths or URLs with automatic caching.
 
 use crate::error::{HorusError, HorusResult};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -14,6 +16,8 @@ pub struct ModelLoader {
     cache_dir: PathBuf,
     /// Verify file checksums
     verify_checksums: bool,
+    /// Expected checksums for models (URL/path -> SHA256 hex)
+    expected_checksums: HashMap<String, String>,
     /// Cache of loaded model paths
     loaded_models: Arc<Mutex<HashMap<String, PathBuf>>>,
 }
@@ -24,6 +28,7 @@ impl ModelLoader {
         Self {
             cache_dir,
             verify_checksums: false,
+            expected_checksums: HashMap::new(),
             loaded_models: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -32,6 +37,53 @@ impl ModelLoader {
     pub fn with_verification(mut self) -> Self {
         self.verify_checksums = true;
         self
+    }
+
+    /// Add an expected checksum for a model URL or path
+    ///
+    /// The checksum should be a lowercase hex-encoded SHA256 hash.
+    /// When verification is enabled, the model will be validated against this hash.
+    pub fn with_checksum(mut self, path_or_url: &str, sha256_hex: &str) -> Self {
+        self.expected_checksums
+            .insert(path_or_url.to_string(), sha256_hex.to_lowercase());
+        self
+    }
+
+    /// Compute SHA256 hash of a file
+    fn compute_sha256(path: &Path) -> HorusResult<String> {
+        let mut file = File::open(path)
+            .map_err(|e| HorusError::Config(format!("Failed to open file for hashing: {}", e)))?;
+
+        let mut hasher = Sha256::new();
+        let mut buffer = [0u8; 8192];
+
+        loop {
+            let bytes_read = file
+                .read(&mut buffer)
+                .map_err(|e| HorusError::Config(format!("Failed to read file: {}", e)))?;
+            if bytes_read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..bytes_read]);
+        }
+
+        let hash = hasher.finalize();
+        Ok(format!("{:x}", hash))
+    }
+
+    /// Verify a file's checksum against the expected value
+    fn verify_checksum(&self, path_or_url: &str, file_path: &Path) -> HorusResult<()> {
+        if let Some(expected) = self.expected_checksums.get(path_or_url) {
+            let actual = Self::compute_sha256(file_path)?;
+            if actual != *expected {
+                return Err(HorusError::Config(format!(
+                    "Checksum mismatch for {}: expected {}, got {}",
+                    path_or_url, expected, actual
+                )));
+            }
+            println!("Checksum verified: {}", path_or_url);
+        }
+        Ok(())
     }
 
     /// Get default cache directory (~/.horus/models/)
@@ -109,10 +161,9 @@ impl ModelLoader {
         if cache_path.exists() {
             println!("Using cached model: {:?}", cache_path);
 
-            // Verify checksum if enabled
+            // Verify checksum if enabled and we have an expected hash
             if self.verify_checksums {
-                // Checksum verification would go here
-                // For now, skip
+                self.verify_checksum(url, &cache_path)?;
             }
 
             // Cache the path
@@ -147,6 +198,11 @@ impl ModelLoader {
                 .map_err(|e| HorusError::Config(format!("Failed to write model file: {}", e)))?;
 
             println!("Download complete");
+
+            // Verify checksum after download if enabled
+            if self.verify_checksums {
+                self.verify_checksum(url, &cache_path)?;
+            }
 
             // Cache the path
             {
@@ -255,5 +311,54 @@ mod tests {
 
         // Cleanup
         fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_checksum_verification() {
+        let temp_dir = std::env::temp_dir();
+        let model_path = temp_dir.join("test_checksum_model.bin");
+        let model_data = b"test model content for checksum";
+        fs::write(&model_path, model_data).unwrap();
+
+        // Compute expected SHA256
+        let expected_hash = ModelLoader::compute_sha256(&model_path).unwrap();
+
+        // Test with correct checksum
+        let loader = ModelLoader::new(temp_dir.join("cache"))
+            .with_verification()
+            .with_checksum(model_path.to_str().unwrap(), &expected_hash);
+
+        // This should verify the checksum internally
+        let result = loader.verify_checksum(model_path.to_str().unwrap(), &model_path);
+        assert!(result.is_ok());
+
+        // Test with wrong checksum
+        let loader_bad = ModelLoader::new(temp_dir.join("cache"))
+            .with_verification()
+            .with_checksum(model_path.to_str().unwrap(), "badhash123");
+
+        let result = loader_bad.verify_checksum(model_path.to_str().unwrap(), &model_path);
+        assert!(result.is_err());
+
+        // Cleanup
+        fs::remove_file(model_path).ok();
+    }
+
+    #[test]
+    fn test_sha256_computation() {
+        let temp_dir = std::env::temp_dir();
+        let test_file = temp_dir.join("test_sha256.txt");
+        fs::write(&test_file, b"hello world").unwrap();
+
+        let hash = ModelLoader::compute_sha256(&test_file).unwrap();
+
+        // Known SHA256 of "hello world"
+        assert_eq!(
+            hash,
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+
+        // Cleanup
+        fs::remove_file(test_file).ok();
     }
 }

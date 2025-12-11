@@ -2,7 +2,7 @@
 // Run with: cargo bench --bench ik_solver_bench
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use nalgebra::{Matrix3, Rotation3, UnitQuaternion, Vector3};
+use nalgebra::{UnitQuaternion, Vector3};
 
 /// Joint configuration for a kinematic chain
 #[derive(Clone, Debug)]

@@ -6,7 +6,9 @@ use crate::physics::PhysicsWorld;
 use crate::rendering::camera_controller::OrbitCamera;
 use crate::robot::urdf_loader::URDFLoader;
 use crate::robot::xacro_loader::XacroPreprocessor;
+use crate::scene::gazebo_models::{GazeboModelSpawner, LoadedGazeboModel};
 use crate::scene::loader::SceneLoader;
+use crate::scene::sdf_importer::SDFImporter;
 use crate::scene::spawner::{ObjectSpawnConfig, ObjectSpawner, SpawnShape, SpawnedObjects};
 use bevy::prelude::*;
 use std::path::Path;
@@ -180,21 +182,72 @@ pub fn setup_scene(
                 }
             }
             "sdf" => {
-                // SDF robot files can be loaded through scene loader
-                warn!(
-                    "Direct SDF robot loading not yet implemented, falling back to default robot"
-                );
-                spawn_default_robot(
-                    &mut commands,
-                    &mut meshes,
-                    &mut materials,
-                    &mut physics_world,
-                    &mut spawned_objects,
-                );
+                // Load SDF file and spawn the first model as the robot
+                match SDFImporter::load_file(robot_file) {
+                    Ok(sdf_world) => {
+                        if let Some(sdf_model) = sdf_world.models.first() {
+                            // Create LoadedGazeboModel from SDF model
+                            let loaded_model = LoadedGazeboModel {
+                                name: sdf_model.name.clone(),
+                                path: robot_file.to_path_buf(),
+                                config: None,
+                                sdf_model: sdf_model.clone(),
+                                meshes: Vec::new(),
+                                materials: Vec::new(),
+                            };
+
+                            // Spawn the model
+                            match GazeboModelSpawner::spawn(
+                                &loaded_model,
+                                &mut commands,
+                                Vec3::ZERO,
+                                Quat::IDENTITY,
+                                &mut meshes,
+                                &mut materials,
+                            ) {
+                                Ok(entity) => {
+                                    spawned_objects.add(entity);
+                                    info!("Successfully loaded robot from SDF: {:?}", robot_path);
+                                }
+                                Err(e) => {
+                                    error!("Failed to spawn SDF model: {}", e);
+                                    warn!("Falling back to default robot");
+                                    spawn_default_robot(
+                                        &mut commands,
+                                        &mut meshes,
+                                        &mut materials,
+                                        &mut physics_world,
+                                        &mut spawned_objects,
+                                    );
+                                }
+                            }
+                        } else {
+                            warn!("SDF file contains no models, falling back to default robot");
+                            spawn_default_robot(
+                                &mut commands,
+                                &mut meshes,
+                                &mut materials,
+                                &mut physics_world,
+                                &mut spawned_objects,
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to load SDF file: {}", e);
+                        warn!("Falling back to default robot");
+                        spawn_default_robot(
+                            &mut commands,
+                            &mut meshes,
+                            &mut materials,
+                            &mut physics_world,
+                            &mut spawned_objects,
+                        );
+                    }
+                }
             }
             _ => {
                 error!("Unsupported robot file format: {}", extension);
-                warn!("Supported formats: .urdf, .xacro");
+                warn!("Supported formats: .urdf, .xacro, .sdf");
                 warn!("Falling back to default robot");
                 spawn_default_robot(
                     &mut commands,

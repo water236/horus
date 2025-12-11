@@ -6,7 +6,7 @@ Comprehensive testing infrastructure for the HORUS robotics framework.
 
 ```bash
 # Run all tests
-cd /home/lord-patpak/horus/HORUS/tests
+cd /home/lord-patpak/softmata/horus/tests
 
 # Run specific test suites
 cd horus_new && ./run_all.sh

@@ -239,4 +239,352 @@ impl CompiledDataflow {
     pub fn is_fast_enough(&self) -> bool {
         self.avg_exec_ns() < 100.0
     }
+
+    /// Create a builder for constructing complex dataflow graphs.
+    ///
+    /// The builder provides a fluent API for defining dataflow computations
+    /// that can be compiled to native code.
+    ///
+    /// # Example
+    /// ```ignore
+    /// use horus_core::scheduling::jit::CompiledDataflow;
+    ///
+    /// let dataflow = CompiledDataflow::builder()
+    ///     .input("sensor1")
+    ///     .input("sensor2")
+    ///     .add("sensor1", "sensor2", "sum")
+    ///     .multiply("sum", "gain", "scaled")
+    ///     .add("scaled", "offset", "output")
+    ///     .build()?;
+    ///
+    /// let result = dataflow.execute(42);
+    /// ```
+    pub fn builder() -> DataflowBuilder {
+        DataflowBuilder::new()
+    }
+}
+
+/// Builder for constructing complex dataflow graphs.
+///
+/// Provides a fluent API for defining dataflow computations that can be
+/// compiled to native code using Cranelift JIT.
+///
+/// # Example
+/// ```ignore
+/// use horus_core::scheduling::jit::CompiledDataflow;
+///
+/// // Simple scaling: output = input * 2 + 10
+/// let dataflow = CompiledDataflow::builder()
+///     .name("scaling")
+///     .constant("scale", 2)
+///     .constant("offset", 10)
+///     .multiply("input", "scale", "scaled")
+///     .add("scaled", "offset", "output")
+///     .output("output")
+///     .build()?;
+///
+/// // Multi-sensor fusion: output = (sensor1 + sensor2) / 2
+/// let fusion = CompiledDataflow::builder()
+///     .name("sensor_fusion")
+///     .input("sensor1")
+///     .input("sensor2")
+///     .constant("divisor", 2)
+///     .add("sensor1", "sensor2", "sum")
+///     .divide("sum", "divisor", "output")
+///     .output("output")
+///     .build()?;
+/// ```
+#[derive(Debug, Clone)]
+pub struct DataflowBuilder {
+    /// Name of the dataflow
+    name: String,
+    /// Input variable names
+    inputs: Vec<String>,
+    /// Constants (name -> value)
+    constants: std::collections::HashMap<String, i64>,
+    /// Operations in order
+    operations: Vec<DataflowOp>,
+    /// Output variable name
+    output: Option<String>,
+}
+
+/// Internal operation representation for the builder
+#[derive(Debug, Clone)]
+struct DataflowOp {
+    op_type: DataflowOpType,
+    left: String,
+    right: String,
+    output: String,
+}
+
+#[derive(Debug, Clone)]
+enum DataflowOpType {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    And,
+    Or,
+    Xor,
+    Neg, // Unary: output = -left
+    Abs, // Unary: output = |left|
+}
+
+impl DataflowBuilder {
+    /// Create a new dataflow builder
+    pub fn new() -> Self {
+        Self {
+            name: "dataflow".to_string(),
+            inputs: vec!["input".to_string()], // Default input
+            constants: std::collections::HashMap::new(),
+            operations: Vec::new(),
+            output: None,
+        }
+    }
+
+    /// Set the name of the dataflow
+    pub fn name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
+
+    /// Add an input variable
+    ///
+    /// By default, there is one input called "input". Call this to add
+    /// additional named inputs or to change the input name.
+    pub fn input(mut self, name: &str) -> Self {
+        if !self.inputs.contains(&name.to_string()) {
+            self.inputs.push(name.to_string());
+        }
+        self
+    }
+
+    /// Clear default inputs (call before adding custom inputs)
+    pub fn no_default_input(mut self) -> Self {
+        self.inputs.clear();
+        self
+    }
+
+    /// Add a constant value
+    pub fn constant(mut self, name: &str, value: i64) -> Self {
+        self.constants.insert(name.to_string(), value);
+        self
+    }
+
+    /// Add two values: output = left + right
+    pub fn add(mut self, left: &str, right: &str, output: &str) -> Self {
+        self.operations.push(DataflowOp {
+            op_type: DataflowOpType::Add,
+            left: left.to_string(),
+            right: right.to_string(),
+            output: output.to_string(),
+        });
+        self
+    }
+
+    /// Subtract two values: output = left - right
+    pub fn subtract(mut self, left: &str, right: &str, output: &str) -> Self {
+        self.operations.push(DataflowOp {
+            op_type: DataflowOpType::Sub,
+            left: left.to_string(),
+            right: right.to_string(),
+            output: output.to_string(),
+        });
+        self
+    }
+
+    /// Multiply two values: output = left * right
+    pub fn multiply(mut self, left: &str, right: &str, output: &str) -> Self {
+        self.operations.push(DataflowOp {
+            op_type: DataflowOpType::Mul,
+            left: left.to_string(),
+            right: right.to_string(),
+            output: output.to_string(),
+        });
+        self
+    }
+
+    /// Divide two values: output = left / right
+    pub fn divide(mut self, left: &str, right: &str, output: &str) -> Self {
+        self.operations.push(DataflowOp {
+            op_type: DataflowOpType::Div,
+            left: left.to_string(),
+            right: right.to_string(),
+            output: output.to_string(),
+        });
+        self
+    }
+
+    /// Modulo two values: output = left % right
+    pub fn modulo(mut self, left: &str, right: &str, output: &str) -> Self {
+        self.operations.push(DataflowOp {
+            op_type: DataflowOpType::Mod,
+            left: left.to_string(),
+            right: right.to_string(),
+            output: output.to_string(),
+        });
+        self
+    }
+
+    /// Bitwise AND: output = left & right
+    pub fn bitwise_and(mut self, left: &str, right: &str, output: &str) -> Self {
+        self.operations.push(DataflowOp {
+            op_type: DataflowOpType::And,
+            left: left.to_string(),
+            right: right.to_string(),
+            output: output.to_string(),
+        });
+        self
+    }
+
+    /// Bitwise OR: output = left | right
+    pub fn bitwise_or(mut self, left: &str, right: &str, output: &str) -> Self {
+        self.operations.push(DataflowOp {
+            op_type: DataflowOpType::Or,
+            left: left.to_string(),
+            right: right.to_string(),
+            output: output.to_string(),
+        });
+        self
+    }
+
+    /// Bitwise XOR: output = left ^ right
+    pub fn bitwise_xor(mut self, left: &str, right: &str, output: &str) -> Self {
+        self.operations.push(DataflowOp {
+            op_type: DataflowOpType::Xor,
+            left: left.to_string(),
+            right: right.to_string(),
+            output: output.to_string(),
+        });
+        self
+    }
+
+    /// Negate a value: output = -input
+    pub fn negate(mut self, input: &str, output: &str) -> Self {
+        self.operations.push(DataflowOp {
+            op_type: DataflowOpType::Neg,
+            left: input.to_string(),
+            right: String::new(), // Unused for unary ops
+            output: output.to_string(),
+        });
+        self
+    }
+
+    /// Absolute value: output = |input|
+    pub fn abs(mut self, input: &str, output: &str) -> Self {
+        self.operations.push(DataflowOp {
+            op_type: DataflowOpType::Abs,
+            left: input.to_string(),
+            right: String::new(), // Unused for unary ops
+            output: output.to_string(),
+        });
+        self
+    }
+
+    /// Set the output variable name
+    ///
+    /// If not called, the output of the last operation is used.
+    pub fn output(mut self, name: &str) -> Self {
+        self.output = Some(name.to_string());
+        self
+    }
+
+    /// Build the dataflow expression AST
+    fn build_expr(&self) -> Result<DataflowExpr, String> {
+        if self.operations.is_empty() {
+            // No operations - just return the first input
+            if self.inputs.is_empty() {
+                return Err("No inputs or operations defined".to_string());
+            }
+            return Ok(DataflowExpr::Input(self.inputs[0].clone()));
+        }
+
+        // Track computed values
+        let mut values: std::collections::HashMap<String, DataflowExpr> =
+            std::collections::HashMap::new();
+
+        // Add inputs
+        for input in &self.inputs {
+            values.insert(input.clone(), DataflowExpr::Input(input.clone()));
+        }
+
+        // Add constants
+        for (name, value) in &self.constants {
+            values.insert(name.clone(), DataflowExpr::Const(*value));
+        }
+
+        // Process operations
+        for op in &self.operations {
+            let left_expr = values
+                .get(&op.left)
+                .cloned()
+                .ok_or_else(|| format!("Unknown variable: {}", op.left))?;
+
+            let result_expr = match op.op_type {
+                DataflowOpType::Neg => DataflowExpr::UnaryOp {
+                    op: UnaryOp::Neg,
+                    expr: Box::new(left_expr),
+                },
+                DataflowOpType::Abs => DataflowExpr::UnaryOp {
+                    op: UnaryOp::Abs,
+                    expr: Box::new(left_expr),
+                },
+                _ => {
+                    // Binary operation
+                    let right_expr = values
+                        .get(&op.right)
+                        .cloned()
+                        .ok_or_else(|| format!("Unknown variable: {}", op.right))?;
+
+                    let binary_op = match op.op_type {
+                        DataflowOpType::Add => BinaryOp::Add,
+                        DataflowOpType::Sub => BinaryOp::Sub,
+                        DataflowOpType::Mul => BinaryOp::Mul,
+                        DataflowOpType::Div => BinaryOp::Div,
+                        DataflowOpType::Mod => BinaryOp::Mod,
+                        DataflowOpType::And => BinaryOp::And,
+                        DataflowOpType::Or => BinaryOp::Or,
+                        DataflowOpType::Xor => BinaryOp::Xor,
+                        _ => unreachable!(),
+                    };
+
+                    DataflowExpr::BinOp {
+                        op: binary_op,
+                        left: Box::new(left_expr),
+                        right: Box::new(right_expr),
+                    }
+                }
+            };
+
+            values.insert(op.output.clone(), result_expr);
+        }
+
+        // Get output expression
+        let output_name = self.output.clone().unwrap_or_else(|| {
+            // Use the output of the last operation
+            self.operations.last().map(|op| op.output.clone()).unwrap()
+        });
+
+        values
+            .remove(&output_name)
+            .ok_or_else(|| format!("Output variable not found: {}", output_name))
+    }
+
+    /// Build and compile the dataflow to native code
+    pub fn build(self) -> Result<CompiledDataflow, String> {
+        let expr = self.build_expr()?;
+        CompiledDataflow::new(&self.name, &expr)
+    }
+
+    /// Build without compiling (returns the expression AST)
+    pub fn build_expr_only(self) -> Result<DataflowExpr, String> {
+        self.build_expr()
+    }
+}
+
+impl Default for DataflowBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
 }

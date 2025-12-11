@@ -5,5 +5,7 @@ mod dataflow;
 mod example_nodes;
 
 pub use compiler::JITCompiler;
-pub use dataflow::CompiledDataflow;
+pub use dataflow::{
+    BinaryOp, CompiledDataflow, DataflowBuilder, DataflowExpr, DataflowNode, UnaryOp,
+};
 pub use example_nodes::ScalingNode;

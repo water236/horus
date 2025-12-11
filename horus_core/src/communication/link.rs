@@ -1408,3 +1408,377 @@ unsafe impl<T> Sync for Link<T> where
         + 'static
 {
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+
+    /// Test message type implementing all required traits
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    struct TestMessage {
+        id: u32,
+        value: f64,
+        label: String,
+    }
+
+    impl crate::core::LogSummary for TestMessage {
+        fn log_summary(&self) -> String {
+            format!("TestMsg(id={}, val={:.2})", self.id, self.value)
+        }
+    }
+
+    /// Simple test message for basic tests
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    struct SimpleValue(f64);
+
+    impl crate::core::LogSummary for SimpleValue {
+        fn log_summary(&self) -> String {
+            format!("{:.2}", self.0)
+        }
+    }
+
+    // =========================================================================
+    // Link Creation Tests
+    // =========================================================================
+
+    #[test]
+    fn test_link_producer_creation() {
+        let producer: Link<SimpleValue> = Link::producer("test_link_producer").unwrap();
+        assert_eq!(producer.get_topic_name(), "test_link_producer");
+        assert!(producer.is_producer());
+        assert!(!producer.is_consumer());
+        assert_eq!(producer.get_connection_state(), ConnectionState::Connected);
+    }
+
+    #[test]
+    fn test_link_consumer_creation() {
+        let consumer: Link<SimpleValue> = Link::consumer("test_link_consumer").unwrap();
+        assert_eq!(consumer.get_topic_name(), "test_link_consumer");
+        assert!(consumer.is_consumer());
+        assert!(!consumer.is_producer());
+        assert_eq!(consumer.get_connection_state(), ConnectionState::Connected);
+    }
+
+    #[test]
+    fn test_link_debug() {
+        let link: Link<SimpleValue> = Link::producer("test_link_debug").unwrap();
+        let debug_str = format!("{:?}", link);
+        assert!(debug_str.contains("Link"));
+        assert!(debug_str.contains("test_link_debug"));
+    }
+
+    // =========================================================================
+    // Connection State Tests
+    // =========================================================================
+
+    #[test]
+    fn test_link_connection_state_conversion() {
+        assert_eq!(ConnectionState::Disconnected.into_u8(), 0);
+        assert_eq!(ConnectionState::Connecting.into_u8(), 1);
+        assert_eq!(ConnectionState::Connected.into_u8(), 2);
+        assert_eq!(ConnectionState::Reconnecting.into_u8(), 3);
+        assert_eq!(ConnectionState::Failed.into_u8(), 4);
+
+        assert_eq!(ConnectionState::from_u8(0), ConnectionState::Disconnected);
+        assert_eq!(ConnectionState::from_u8(1), ConnectionState::Connecting);
+        assert_eq!(ConnectionState::from_u8(2), ConnectionState::Connected);
+        assert_eq!(ConnectionState::from_u8(3), ConnectionState::Reconnecting);
+        assert_eq!(ConnectionState::from_u8(4), ConnectionState::Failed);
+        assert_eq!(ConnectionState::from_u8(255), ConnectionState::Failed);
+    }
+
+    // =========================================================================
+    // Basic Send/Receive Tests
+    // =========================================================================
+
+    #[test]
+    fn test_link_send_recv_simple() {
+        let producer: Link<SimpleValue> = Link::producer("test_link_sr_simple").unwrap();
+        let consumer: Link<SimpleValue> = Link::consumer("test_link_sr_simple").unwrap();
+
+        // Producer sends
+        let result = producer.send(SimpleValue(42.0), &mut None);
+        assert!(result.is_ok());
+
+        // Consumer receives
+        let received = consumer.recv(&mut None);
+        assert!(received.is_some());
+        assert_eq!(received.unwrap(), SimpleValue(42.0));
+    }
+
+    #[test]
+    fn test_link_send_recv_complex_message() {
+        let producer: Link<TestMessage> = Link::producer("test_link_sr_complex").unwrap();
+        let consumer: Link<TestMessage> = Link::consumer("test_link_sr_complex").unwrap();
+
+        let msg = TestMessage {
+            id: 123,
+            value: 1.234, // Arbitrary test value
+            label: "test".to_string(),
+        };
+
+        producer.send(msg.clone(), &mut None).unwrap();
+        let received = consumer.recv(&mut None).unwrap();
+        assert_eq!(received, msg);
+    }
+
+    #[test]
+    fn test_link_recv_empty() {
+        let consumer: Link<SimpleValue> = Link::consumer("test_link_recv_empty").unwrap();
+        // No message sent, should return None
+        let received = consumer.recv(&mut None);
+        assert!(received.is_none());
+    }
+
+    #[test]
+    fn test_link_overwrite_semantics() {
+        // Link uses single-slot semantics - new message overwrites old
+        let producer: Link<SimpleValue> = Link::producer("test_link_overwrite").unwrap();
+        let consumer: Link<SimpleValue> = Link::consumer("test_link_overwrite").unwrap();
+
+        producer.send(SimpleValue(1.0), &mut None).unwrap();
+        producer.send(SimpleValue(2.0), &mut None).unwrap();
+        producer.send(SimpleValue(3.0), &mut None).unwrap();
+
+        // Consumer should get the latest value
+        let received = consumer.recv(&mut None);
+        assert!(received.is_some());
+        assert_eq!(received.unwrap(), SimpleValue(3.0));
+    }
+
+    #[test]
+    fn test_link_sequence_tracking() {
+        // Consumer tracks sequence to avoid re-reading same message
+        let producer: Link<SimpleValue> = Link::producer("test_link_sequence").unwrap();
+        let consumer: Link<SimpleValue> = Link::consumer("test_link_sequence").unwrap();
+
+        // Send one message
+        producer.send(SimpleValue(1.0), &mut None).unwrap();
+
+        // First recv gets it
+        let first = consumer.recv(&mut None);
+        assert!(first.is_some());
+        assert_eq!(first.unwrap(), SimpleValue(1.0));
+
+        // Second recv without new send returns None (already seen)
+        let second = consumer.recv(&mut None);
+        assert!(second.is_none());
+
+        // Send new message
+        producer.send(SimpleValue(2.0), &mut None).unwrap();
+
+        // Now recv gets the new one
+        let third = consumer.recv(&mut None);
+        assert!(third.is_some());
+        assert_eq!(third.unwrap(), SimpleValue(2.0));
+    }
+
+    // =========================================================================
+    // Metrics Tests
+    // =========================================================================
+
+    #[test]
+    fn test_link_metrics_initial() {
+        let link: Link<SimpleValue> = Link::producer("test_link_metrics_init").unwrap();
+        let metrics = link.get_metrics();
+
+        assert_eq!(metrics.messages_sent, 0);
+        assert_eq!(metrics.messages_received, 0);
+        assert_eq!(metrics.send_failures, 0);
+        assert_eq!(metrics.recv_failures, 0);
+    }
+
+    #[test]
+    fn test_link_metrics_after_send() {
+        let producer: Link<SimpleValue> = Link::producer("test_link_metrics_send").unwrap();
+
+        producer.send(SimpleValue(1.0), &mut None).unwrap();
+        producer.send(SimpleValue(2.0), &mut None).unwrap();
+        producer.send(SimpleValue(3.0), &mut None).unwrap();
+
+        let metrics = producer.get_metrics();
+        assert_eq!(metrics.messages_sent, 3);
+        assert_eq!(metrics.send_failures, 0);
+    }
+
+    #[test]
+    fn test_link_metrics_after_recv() {
+        let producer: Link<SimpleValue> = Link::producer("test_link_metrics_recv").unwrap();
+        let consumer: Link<SimpleValue> = Link::consumer("test_link_metrics_recv").unwrap();
+
+        producer.send(SimpleValue(1.0), &mut None).unwrap();
+        consumer.recv(&mut None);
+
+        let metrics = consumer.get_metrics();
+        assert_eq!(metrics.messages_received, 1);
+    }
+
+    // =========================================================================
+    // Clone Tests
+    // =========================================================================
+
+    #[test]
+    fn test_link_clone_local() {
+        let producer1: Link<SimpleValue> = Link::producer("test_link_clone_local").unwrap();
+        let producer2 = producer1.clone();
+
+        // Both should work independently
+        producer1.send(SimpleValue(1.0), &mut None).unwrap();
+        producer2.send(SimpleValue(2.0), &mut None).unwrap();
+
+        // Metrics are shared
+        assert_eq!(producer1.get_metrics().messages_sent, 2);
+        assert_eq!(producer2.get_metrics().messages_sent, 2);
+    }
+
+    // =========================================================================
+    // Edge Cases
+    // =========================================================================
+
+    #[test]
+    fn test_link_with_large_message() {
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+        struct LargeMessage {
+            data: Vec<u8>,
+        }
+
+        impl crate::core::LogSummary for LargeMessage {
+            fn log_summary(&self) -> String {
+                format!("LargeMsg({}B)", self.data.len())
+            }
+        }
+
+        let producer: Link<LargeMessage> = Link::producer("test_link_large_msg").unwrap();
+        let consumer: Link<LargeMessage> = Link::consumer("test_link_large_msg").unwrap();
+
+        let large_data = LargeMessage {
+            data: vec![42u8; 10000], // 10KB message
+        };
+
+        producer.send(large_data.clone(), &mut None).unwrap();
+        let received = consumer.recv(&mut None).unwrap();
+        assert_eq!(received.data.len(), 10000);
+        assert!(received.data.iter().all(|&b| b == 42));
+    }
+
+    #[test]
+    fn test_link_rapid_send_recv() {
+        let producer: Link<SimpleValue> = Link::producer("test_link_rapid").unwrap();
+        let consumer: Link<SimpleValue> = Link::consumer("test_link_rapid").unwrap();
+
+        for i in 0..1000 {
+            producer.send(SimpleValue(i as f64), &mut None).unwrap();
+            let val = consumer.recv(&mut None);
+            assert!(val.is_some());
+            assert_eq!(val.unwrap(), SimpleValue(i as f64));
+        }
+
+        assert_eq!(producer.get_metrics().messages_sent, 1000);
+        assert_eq!(consumer.get_metrics().messages_received, 1000);
+    }
+
+    #[test]
+    fn test_link_multiple_send_single_recv() {
+        let producer: Link<SimpleValue> = Link::producer("test_link_multi_send").unwrap();
+        let consumer: Link<SimpleValue> = Link::consumer("test_link_multi_send").unwrap();
+
+        // Send many messages rapidly
+        for i in 0..100 {
+            producer.send(SimpleValue(i as f64), &mut None).unwrap();
+        }
+
+        // Consumer only reads once - should get the latest
+        let received = consumer.recv(&mut None);
+        assert!(received.is_some());
+        // Value should be 99.0 (last sent)
+        assert_eq!(received.unwrap(), SimpleValue(99.0));
+    }
+
+    // =========================================================================
+    // Role Tests
+    // =========================================================================
+
+    #[test]
+    fn test_link_role_enum() {
+        assert_eq!(LinkRole::Producer, LinkRole::Producer);
+        assert_eq!(LinkRole::Consumer, LinkRole::Consumer);
+        assert_ne!(LinkRole::Producer, LinkRole::Consumer);
+    }
+
+    #[test]
+    fn test_link_role_checking() {
+        let producer: Link<SimpleValue> = Link::producer("test_link_role_check").unwrap();
+        let consumer: Link<SimpleValue> = Link::consumer("test_link_role_check").unwrap();
+
+        assert!(producer.is_producer());
+        assert!(!producer.is_consumer());
+
+        assert!(consumer.is_consumer());
+        assert!(!consumer.is_producer());
+    }
+
+    // =========================================================================
+    // Thread Safety Tests
+    // =========================================================================
+
+    #[test]
+    fn test_link_send_from_different_thread() {
+        use std::thread;
+
+        let producer: Link<SimpleValue> = Link::producer("test_link_threaded").unwrap();
+        let consumer: Link<SimpleValue> = Link::consumer("test_link_threaded").unwrap();
+
+        // Send from another thread
+        let handle = thread::spawn(move || {
+            for i in 0..10 {
+                producer.send(SimpleValue(i as f64), &mut None).unwrap();
+                thread::sleep(std::time::Duration::from_micros(100));
+            }
+            producer.get_metrics().messages_sent
+        });
+
+        // Let producer get ahead
+        thread::sleep(std::time::Duration::from_millis(5));
+
+        // Receive should work
+        let mut received_count = 0;
+        for _ in 0..20 {
+            if consumer.recv(&mut None).is_some() {
+                received_count += 1;
+            }
+            thread::sleep(std::time::Duration::from_micros(100));
+        }
+
+        let sent_count = handle.join().unwrap();
+        assert_eq!(sent_count, 10);
+        // Should have received at least some messages
+        assert!(received_count >= 1);
+    }
+
+    // =========================================================================
+    // LinkMetrics Tests
+    // =========================================================================
+
+    #[test]
+    fn test_link_metrics_default() {
+        let metrics = LinkMetrics::default();
+        assert_eq!(metrics.messages_sent, 0);
+        assert_eq!(metrics.messages_received, 0);
+        assert_eq!(metrics.send_failures, 0);
+        assert_eq!(metrics.recv_failures, 0);
+    }
+
+    #[test]
+    fn test_link_metrics_clone() {
+        let metrics = LinkMetrics {
+            messages_sent: 10,
+            messages_received: 5,
+            send_failures: 1,
+            recv_failures: 2,
+        };
+        let cloned = metrics.clone();
+        assert_eq!(cloned.messages_sent, 10);
+        assert_eq!(cloned.messages_received, 5);
+    }
+}

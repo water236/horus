@@ -31,8 +31,8 @@ version = "0.1.6"
 edition = "2021"
 
 [dependencies]
-horus = { path = "/home/lord-patpak/horus/HORUS/horus" }
-horus_library = { path = "/home/lord-patpak/horus/HORUS/horus_library" }
+horus = { path = "/home/lord-patpak/softmata/horus/horus" }
+horus_library = { path = "/home/lord-patpak/softmata/horus/horus_library" }
 """
         (project_dir / "Cargo.toml").write_text(cargo_toml)
 

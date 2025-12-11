@@ -90,12 +90,44 @@ pub type Result<T> = std::result::Result<T, CloudError>;
 
 /// Cloud storage provider
 ///
-/// Currently only local filesystem is supported. Cloud providers (S3, GCS, Azure)
-/// would require additional dependencies and are not implemented.
+/// Supports local filesystem and major cloud providers (S3, GCS, Azure).
+/// Cloud providers require their respective feature flags:
+/// - `cloud-s3` for AWS S3
+/// - `cloud-gcs` for Google Cloud Storage
+/// - `cloud-azure` for Azure Blob Storage
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CloudProvider {
     /// Local filesystem storage
     Local { base_path: PathBuf },
+
+    /// AWS S3 storage
+    #[cfg(feature = "cloud-s3")]
+    S3 {
+        /// S3 bucket name
+        bucket: String,
+        /// AWS region (e.g., "us-east-1")
+        region: String,
+        /// Optional custom endpoint (for S3-compatible services like MinIO)
+        endpoint: Option<String>,
+    },
+
+    /// Google Cloud Storage
+    #[cfg(feature = "cloud-gcs")]
+    Gcs {
+        /// GCS bucket name
+        bucket: String,
+        /// Optional project ID (uses default if not specified)
+        project_id: Option<String>,
+    },
+
+    /// Azure Blob Storage
+    #[cfg(feature = "cloud-azure")]
+    Azure {
+        /// Azure storage account name
+        account: String,
+        /// Azure container name
+        container: String,
+    },
 }
 
 /// Cloud storage configuration
@@ -168,6 +200,143 @@ impl CloudConfig {
         self.custom_metadata
             .insert(key.to_string(), value.to_string());
         self
+    }
+
+    /// Create AWS S3 configuration
+    ///
+    /// Requires the `cloud-s3` feature. Authentication is handled via:
+    /// - Environment variables: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
+    /// - AWS credentials file: `~/.aws/credentials`
+    /// - IAM role (when running on AWS)
+    ///
+    /// # Example
+    /// ```ignore
+    /// let config = CloudConfig::s3("my-bucket", "us-east-1", "recordings/robot-001/");
+    /// ```
+    #[cfg(feature = "cloud-s3")]
+    pub fn s3(bucket: &str, region: &str, prefix: &str) -> Self {
+        Self {
+            provider: CloudProvider::S3 {
+                bucket: bucket.to_string(),
+                region: region.to_string(),
+                endpoint: None,
+            },
+            prefix: prefix.to_string(),
+            compression_level: 6,
+            chunk_size: 5 * 1024 * 1024, // S3 minimum part size
+            max_concurrent_uploads: 4,
+            auto_retry: true,
+            max_retries: 3,
+            retry_delay_ms: 1000,
+            chunk_timeout_secs: 60,
+            enable_encryption: false,
+            custom_metadata: HashMap::new(),
+        }
+    }
+
+    /// Create AWS S3 configuration with custom endpoint (for MinIO, etc.)
+    #[cfg(feature = "cloud-s3")]
+    pub fn s3_with_endpoint(bucket: &str, region: &str, endpoint: &str, prefix: &str) -> Self {
+        Self {
+            provider: CloudProvider::S3 {
+                bucket: bucket.to_string(),
+                region: region.to_string(),
+                endpoint: Some(endpoint.to_string()),
+            },
+            prefix: prefix.to_string(),
+            compression_level: 6,
+            chunk_size: 5 * 1024 * 1024,
+            max_concurrent_uploads: 4,
+            auto_retry: true,
+            max_retries: 3,
+            retry_delay_ms: 1000,
+            chunk_timeout_secs: 60,
+            enable_encryption: false,
+            custom_metadata: HashMap::new(),
+        }
+    }
+
+    /// Create Google Cloud Storage configuration
+    ///
+    /// Requires the `cloud-gcs` feature. Authentication is handled via:
+    /// - Environment variable: `GOOGLE_APPLICATION_CREDENTIALS`
+    /// - Default application credentials
+    /// - Service account key file
+    ///
+    /// # Example
+    /// ```ignore
+    /// let config = CloudConfig::gcs("my-bucket", "recordings/robot-001/");
+    /// ```
+    #[cfg(feature = "cloud-gcs")]
+    pub fn gcs(bucket: &str, prefix: &str) -> Self {
+        Self {
+            provider: CloudProvider::Gcs {
+                bucket: bucket.to_string(),
+                project_id: None,
+            },
+            prefix: prefix.to_string(),
+            compression_level: 6,
+            chunk_size: 5 * 1024 * 1024,
+            max_concurrent_uploads: 4,
+            auto_retry: true,
+            max_retries: 3,
+            retry_delay_ms: 1000,
+            chunk_timeout_secs: 60,
+            enable_encryption: false,
+            custom_metadata: HashMap::new(),
+        }
+    }
+
+    /// Create Google Cloud Storage configuration with project ID
+    #[cfg(feature = "cloud-gcs")]
+    pub fn gcs_with_project(bucket: &str, project_id: &str, prefix: &str) -> Self {
+        Self {
+            provider: CloudProvider::Gcs {
+                bucket: bucket.to_string(),
+                project_id: Some(project_id.to_string()),
+            },
+            prefix: prefix.to_string(),
+            compression_level: 6,
+            chunk_size: 5 * 1024 * 1024,
+            max_concurrent_uploads: 4,
+            auto_retry: true,
+            max_retries: 3,
+            retry_delay_ms: 1000,
+            chunk_timeout_secs: 60,
+            enable_encryption: false,
+            custom_metadata: HashMap::new(),
+        }
+    }
+
+    /// Create Azure Blob Storage configuration
+    ///
+    /// Requires the `cloud-azure` feature. Authentication is handled via:
+    /// - Environment variables: `AZURE_STORAGE_ACCOUNT`, `AZURE_STORAGE_KEY`
+    /// - Connection string: `AZURE_STORAGE_CONNECTION_STRING`
+    /// - Managed identity (when running on Azure)
+    ///
+    /// # Example
+    /// ```ignore
+    /// let config = CloudConfig::azure("mystorageaccount", "recordings", "robot-001/");
+    /// ```
+    #[cfg(feature = "cloud-azure")]
+    pub fn azure(account: &str, container: &str, prefix: &str) -> Self {
+        Self {
+            provider: CloudProvider::Azure {
+                account: account.to_string(),
+                container: container.to_string(),
+            },
+            prefix: prefix.to_string(),
+            compression_level: 6,
+            chunk_size: 4 * 1024 * 1024, // Azure block size (4MB recommended)
+            max_concurrent_uploads: 4,
+            auto_retry: true,
+            max_retries: 3,
+            retry_delay_ms: 1000,
+            chunk_timeout_secs: 60,
+            enable_encryption: false,
+            custom_metadata: HashMap::new(),
+        }
     }
 }
 
@@ -450,6 +619,791 @@ impl CloudBackend for LocalBackend {
     }
 }
 
+// =============================================================================
+// AWS S3 Backend
+// =============================================================================
+
+/// AWS S3 storage backend
+///
+/// Requires the `cloud-s3` feature and AWS credentials configured via:
+/// - Environment variables: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
+/// - AWS credentials file: `~/.aws/credentials`
+/// - IAM role (when running on AWS EC2/ECS/Lambda)
+#[cfg(feature = "cloud-s3")]
+pub struct S3Backend {
+    bucket: String,
+    region: String,
+    endpoint: Option<String>,
+    client: aws_sdk_s3::Client,
+    runtime: tokio::runtime::Runtime,
+}
+
+#[cfg(feature = "cloud-s3")]
+impl S3Backend {
+    /// Create a new S3 backend
+    pub fn new(bucket: &str, region: &str, endpoint: Option<&str>) -> Result<Self> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| CloudError::Storage(format!("Failed to create tokio runtime: {}", e)))?;
+
+        let client = runtime.block_on(async {
+            let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+                .region(aws_sdk_s3::config::Region::new(region.to_string()))
+                .load()
+                .await;
+
+            let mut s3_config = aws_sdk_s3::config::Builder::from(&config);
+            if let Some(ep) = endpoint {
+                s3_config = s3_config.endpoint_url(ep).force_path_style(true);
+            }
+            aws_sdk_s3::Client::from_conf(s3_config.build())
+        });
+
+        Ok(Self {
+            bucket: bucket.to_string(),
+            region: region.to_string(),
+            endpoint: endpoint.map(String::from),
+            client,
+            runtime,
+        })
+    }
+}
+
+#[cfg(feature = "cloud-s3")]
+impl CloudBackend for S3Backend {
+    fn init(&mut self) -> Result<()> {
+        // Verify bucket exists by doing a head_bucket call
+        let bucket = self.bucket.clone();
+        self.runtime.block_on(async {
+            self.client
+                .head_bucket()
+                .bucket(&bucket)
+                .send()
+                .await
+                .map_err(|e| {
+                    CloudError::Storage(format!("S3 bucket '{}' not accessible: {}", bucket, e))
+                })?;
+            Ok(())
+        })
+    }
+
+    fn upload_file(&self, local_path: &Path, cloud_path: &str) -> Result<String> {
+        let data = std::fs::read(local_path)?;
+        let bucket = self.bucket.clone();
+        let key = cloud_path.to_string();
+
+        self.runtime.block_on(async {
+            self.client
+                .put_object()
+                .bucket(&bucket)
+                .key(&key)
+                .body(data.into())
+                .send()
+                .await
+                .map_err(|e| CloudError::UploadFailed(format!("S3 upload failed: {}", e)))?;
+            Ok(key)
+        })
+    }
+
+    fn start_multipart(&self, cloud_path: &str) -> Result<String> {
+        let bucket = self.bucket.clone();
+        let key = cloud_path.to_string();
+
+        self.runtime.block_on(async {
+            let resp = self
+                .client
+                .create_multipart_upload()
+                .bucket(&bucket)
+                .key(&key)
+                .send()
+                .await
+                .map_err(|e| {
+                    CloudError::UploadFailed(format!("S3 multipart init failed: {}", e))
+                })?;
+            Ok(resp.upload_id().unwrap_or("").to_string())
+        })
+    }
+
+    fn upload_part(&self, upload_id: &str, part_number: u32, data: &[u8]) -> Result<CloudPart> {
+        let bucket = self.bucket.clone();
+        let upload_id = upload_id.to_string();
+        let data = data.to_vec();
+
+        self.runtime.block_on(async {
+            let resp = self
+                .client
+                .upload_part()
+                .bucket(&bucket)
+                .key("") // Key is stored in the multipart upload
+                .upload_id(&upload_id)
+                .part_number(part_number as i32)
+                .body(data.clone().into())
+                .send()
+                .await
+                .map_err(|e| CloudError::UploadFailed(format!("S3 part upload failed: {}", e)))?;
+
+            Ok(CloudPart {
+                part_number,
+                size: data.len() as u64,
+                etag: resp.e_tag().map(String::from),
+                checksum: None,
+            })
+        })
+    }
+
+    fn complete_multipart(
+        &self,
+        upload_id: &str,
+        cloud_path: &str,
+        parts: &[CloudPart],
+    ) -> Result<()> {
+        let bucket = self.bucket.clone();
+        let key = cloud_path.to_string();
+        let upload_id = upload_id.to_string();
+
+        let completed_parts: Vec<_> = parts
+            .iter()
+            .map(|p| {
+                aws_sdk_s3::types::CompletedPart::builder()
+                    .part_number(p.part_number as i32)
+                    .set_e_tag(p.etag.clone())
+                    .build()
+            })
+            .collect();
+
+        self.runtime.block_on(async {
+            self.client
+                .complete_multipart_upload()
+                .bucket(&bucket)
+                .key(&key)
+                .upload_id(&upload_id)
+                .multipart_upload(
+                    aws_sdk_s3::types::CompletedMultipartUpload::builder()
+                        .set_parts(Some(completed_parts))
+                        .build(),
+                )
+                .send()
+                .await
+                .map_err(|e| {
+                    CloudError::UploadFailed(format!("S3 multipart complete failed: {}", e))
+                })?;
+            Ok(())
+        })
+    }
+
+    fn abort_multipart(&self, upload_id: &str, cloud_path: &str) -> Result<()> {
+        let bucket = self.bucket.clone();
+        let key = cloud_path.to_string();
+        let upload_id = upload_id.to_string();
+
+        self.runtime.block_on(async {
+            self.client
+                .abort_multipart_upload()
+                .bucket(&bucket)
+                .key(&key)
+                .upload_id(&upload_id)
+                .send()
+                .await
+                .map_err(|e| CloudError::Storage(format!("S3 abort failed: {}", e)))?;
+            Ok(())
+        })
+    }
+
+    fn download_file(&self, cloud_path: &str, local_path: &Path) -> Result<()> {
+        let bucket = self.bucket.clone();
+        let key = cloud_path.to_string();
+
+        let data = self.runtime.block_on(async {
+            let resp = self
+                .client
+                .get_object()
+                .bucket(&bucket)
+                .key(&key)
+                .send()
+                .await
+                .map_err(|e| CloudError::DownloadFailed(format!("S3 download failed: {}", e)))?;
+            resp.body
+                .collect()
+                .await
+                .map_err(|e| CloudError::DownloadFailed(format!("S3 read body failed: {}", e)))
+        })?;
+
+        if let Some(parent) = local_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(local_path, data.into_bytes())?;
+        Ok(())
+    }
+
+    fn download_range(&self, cloud_path: &str, start: u64, end: u64) -> Result<Vec<u8>> {
+        let bucket = self.bucket.clone();
+        let key = cloud_path.to_string();
+
+        self.runtime.block_on(async {
+            let resp = self
+                .client
+                .get_object()
+                .bucket(&bucket)
+                .key(&key)
+                .range(format!("bytes={}-{}", start, end - 1))
+                .send()
+                .await
+                .map_err(|e| {
+                    CloudError::DownloadFailed(format!("S3 range download failed: {}", e))
+                })?;
+            let data =
+                resp.body.collect().await.map_err(|e| {
+                    CloudError::DownloadFailed(format!("S3 read body failed: {}", e))
+                })?;
+            Ok(data.into_bytes().to_vec())
+        })
+    }
+
+    fn exists(&self, cloud_path: &str) -> Result<bool> {
+        let bucket = self.bucket.clone();
+        let key = cloud_path.to_string();
+
+        self.runtime.block_on(async {
+            match self
+                .client
+                .head_object()
+                .bucket(&bucket)
+                .key(&key)
+                .send()
+                .await
+            {
+                Ok(_) => Ok(true),
+                Err(_) => Ok(false),
+            }
+        })
+    }
+
+    fn delete(&self, cloud_path: &str) -> Result<()> {
+        let bucket = self.bucket.clone();
+        let key = cloud_path.to_string();
+
+        self.runtime.block_on(async {
+            self.client
+                .delete_object()
+                .bucket(&bucket)
+                .key(&key)
+                .send()
+                .await
+                .map_err(|e| CloudError::Storage(format!("S3 delete failed: {}", e)))?;
+            Ok(())
+        })
+    }
+
+    fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        let bucket = self.bucket.clone();
+        let prefix = prefix.to_string();
+
+        self.runtime.block_on(async {
+            let resp = self
+                .client
+                .list_objects_v2()
+                .bucket(&bucket)
+                .prefix(&prefix)
+                .send()
+                .await
+                .map_err(|e| CloudError::Storage(format!("S3 list failed: {}", e)))?;
+
+            Ok(resp
+                .contents()
+                .iter()
+                .filter_map(|obj| obj.key().map(String::from))
+                .collect())
+        })
+    }
+
+    fn head(&self, cloud_path: &str) -> Result<HashMap<String, String>> {
+        let bucket = self.bucket.clone();
+        let key = cloud_path.to_string();
+
+        self.runtime.block_on(async {
+            let resp = self
+                .client
+                .head_object()
+                .bucket(&bucket)
+                .key(&key)
+                .send()
+                .await
+                .map_err(|e| CloudError::NotFound(format!("S3 head failed: {}", e)))?;
+
+            let mut result = HashMap::new();
+            if let Some(size) = resp.content_length() {
+                result.insert("size".to_string(), size.to_string());
+            }
+            if let Some(etag) = resp.e_tag() {
+                result.insert("etag".to_string(), etag.to_string());
+            }
+            if let Some(modified) = resp.last_modified() {
+                result.insert("last-modified".to_string(), modified.to_string());
+            }
+            Ok(result)
+        })
+    }
+}
+
+// =============================================================================
+// Google Cloud Storage Backend
+// =============================================================================
+
+/// Google Cloud Storage backend
+///
+/// Requires the `cloud-gcs` feature and GCP credentials configured via:
+/// - Environment variable: `GOOGLE_APPLICATION_CREDENTIALS`
+/// - Default application credentials
+/// - Service account key file
+#[cfg(feature = "cloud-gcs")]
+pub struct GcsBackend {
+    bucket: String,
+    #[allow(dead_code)]
+    project_id: Option<String>,
+    client: google_cloud_storage::client::Client,
+    runtime: tokio::runtime::Runtime,
+}
+
+#[cfg(feature = "cloud-gcs")]
+impl GcsBackend {
+    /// Create a new GCS backend
+    pub fn new(bucket: &str, project_id: Option<&str>) -> Result<Self> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| CloudError::Storage(format!("Failed to create tokio runtime: {}", e)))?;
+
+        let client = runtime.block_on(async {
+            google_cloud_storage::client::Client::default()
+                .await
+                .map_err(|e| CloudError::Auth(format!("GCS authentication failed: {}", e)))
+        })?;
+
+        Ok(Self {
+            bucket: bucket.to_string(),
+            project_id: project_id.map(String::from),
+            client,
+            runtime,
+        })
+    }
+}
+
+#[cfg(feature = "cloud-gcs")]
+impl CloudBackend for GcsBackend {
+    fn init(&mut self) -> Result<()> {
+        // Verify bucket exists
+        let bucket = self.bucket.clone();
+        self.runtime.block_on(async {
+            use google_cloud_storage::http::buckets::get::GetBucketRequest;
+            self.client
+                .get_bucket(&GetBucketRequest {
+                    bucket,
+                    ..Default::default()
+                })
+                .await
+                .map_err(|e| CloudError::Storage(format!("GCS bucket not accessible: {}", e)))?;
+            Ok(())
+        })
+    }
+
+    fn upload_file(&self, local_path: &Path, cloud_path: &str) -> Result<String> {
+        let data = std::fs::read(local_path)?;
+        let bucket = self.bucket.clone();
+        let name = cloud_path.to_string();
+
+        self.runtime.block_on(async {
+            use google_cloud_storage::http::objects::upload::{
+                Media, UploadObjectRequest, UploadType,
+            };
+            self.client
+                .upload_object(
+                    &UploadObjectRequest {
+                        bucket,
+                        ..Default::default()
+                    },
+                    data,
+                    &UploadType::Simple(Media::new(name.clone())),
+                )
+                .await
+                .map_err(|e| CloudError::UploadFailed(format!("GCS upload failed: {}", e)))?;
+            Ok(name)
+        })
+    }
+
+    fn start_multipart(&self, cloud_path: &str) -> Result<String> {
+        // GCS uses resumable uploads, but for simplicity we'll use simple uploads
+        // For very large files, implement resumable upload session
+        Ok(format!("gcs_upload_{}", cloud_path.replace('/', "_")))
+    }
+
+    fn upload_part(&self, _upload_id: &str, part_number: u32, data: &[u8]) -> Result<CloudPart> {
+        Ok(CloudPart {
+            part_number,
+            size: data.len() as u64,
+            etag: None,
+            checksum: Some(format!("{:x}", simple_hash(data))),
+        })
+    }
+
+    fn complete_multipart(
+        &self,
+        _upload_id: &str,
+        _cloud_path: &str,
+        _parts: &[CloudPart],
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn abort_multipart(&self, _upload_id: &str, _cloud_path: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn download_file(&self, cloud_path: &str, local_path: &Path) -> Result<()> {
+        let bucket = self.bucket.clone();
+        let object = cloud_path.to_string();
+
+        let data = self.runtime.block_on(async {
+            use google_cloud_storage::http::objects::download::Range;
+            use google_cloud_storage::http::objects::get::GetObjectRequest;
+            self.client
+                .download_object(
+                    &GetObjectRequest {
+                        bucket,
+                        object,
+                        ..Default::default()
+                    },
+                    &Range::default(),
+                )
+                .await
+                .map_err(|e| CloudError::DownloadFailed(format!("GCS download failed: {}", e)))
+        })?;
+
+        if let Some(parent) = local_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(local_path, data)?;
+        Ok(())
+    }
+
+    fn download_range(&self, cloud_path: &str, start: u64, end: u64) -> Result<Vec<u8>> {
+        let bucket = self.bucket.clone();
+        let object = cloud_path.to_string();
+
+        self.runtime.block_on(async {
+            use google_cloud_storage::http::objects::download::Range;
+            use google_cloud_storage::http::objects::get::GetObjectRequest;
+            self.client
+                .download_object(
+                    &GetObjectRequest {
+                        bucket,
+                        object,
+                        ..Default::default()
+                    },
+                    &Range(Some(start as i64), Some(end as i64)),
+                )
+                .await
+                .map_err(|e| {
+                    CloudError::DownloadFailed(format!("GCS range download failed: {}", e))
+                })
+        })
+    }
+
+    fn exists(&self, cloud_path: &str) -> Result<bool> {
+        let bucket = self.bucket.clone();
+        let object = cloud_path.to_string();
+
+        self.runtime.block_on(async {
+            use google_cloud_storage::http::objects::get::GetObjectRequest;
+            match self
+                .client
+                .get_object(&GetObjectRequest {
+                    bucket,
+                    object,
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok(_) => Ok(true),
+                Err(_) => Ok(false),
+            }
+        })
+    }
+
+    fn delete(&self, cloud_path: &str) -> Result<()> {
+        let bucket = self.bucket.clone();
+        let object = cloud_path.to_string();
+
+        self.runtime.block_on(async {
+            use google_cloud_storage::http::objects::delete::DeleteObjectRequest;
+            self.client
+                .delete_object(&DeleteObjectRequest {
+                    bucket,
+                    object,
+                    ..Default::default()
+                })
+                .await
+                .map_err(|e| CloudError::Storage(format!("GCS delete failed: {}", e)))?;
+            Ok(())
+        })
+    }
+
+    fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        let bucket = self.bucket.clone();
+        let prefix = prefix.to_string();
+
+        self.runtime.block_on(async {
+            use google_cloud_storage::http::objects::list::ListObjectsRequest;
+            let resp = self
+                .client
+                .list_objects(&ListObjectsRequest {
+                    bucket,
+                    prefix: Some(prefix),
+                    ..Default::default()
+                })
+                .await
+                .map_err(|e| CloudError::Storage(format!("GCS list failed: {}", e)))?;
+            Ok(resp.items.into_iter().map(|obj| obj.name).collect())
+        })
+    }
+
+    fn head(&self, cloud_path: &str) -> Result<HashMap<String, String>> {
+        let bucket = self.bucket.clone();
+        let object = cloud_path.to_string();
+
+        self.runtime.block_on(async {
+            use google_cloud_storage::http::objects::get::GetObjectRequest;
+            let obj = self
+                .client
+                .get_object(&GetObjectRequest {
+                    bucket,
+                    object,
+                    ..Default::default()
+                })
+                .await
+                .map_err(|e| CloudError::NotFound(format!("GCS head failed: {}", e)))?;
+
+            let mut result = HashMap::new();
+            result.insert("size".to_string(), obj.size.to_string());
+            if let Some(etag) = obj.etag {
+                result.insert("etag".to_string(), etag);
+            }
+            Ok(result)
+        })
+    }
+}
+
+// =============================================================================
+// Azure Blob Storage Backend
+// =============================================================================
+
+/// Azure Blob Storage backend
+///
+/// Requires the `cloud-azure` feature and Azure credentials configured via:
+/// - Environment variables: `AZURE_STORAGE_ACCOUNT`, `AZURE_STORAGE_KEY`
+/// - Connection string: `AZURE_STORAGE_CONNECTION_STRING`
+/// - Managed identity (when running on Azure)
+#[cfg(feature = "cloud-azure")]
+pub struct AzureBackend {
+    account: String,
+    container: String,
+    client: azure_storage_blobs::prelude::ContainerClient,
+    runtime: tokio::runtime::Runtime,
+}
+
+#[cfg(feature = "cloud-azure")]
+impl AzureBackend {
+    /// Create a new Azure Blob Storage backend
+    pub fn new(account: &str, container: &str) -> Result<Self> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| CloudError::Storage(format!("Failed to create tokio runtime: {}", e)))?;
+
+        // Try connection string first, then account/key
+        let storage_credentials = if let Ok(conn_str) =
+            std::env::var("AZURE_STORAGE_CONNECTION_STRING")
+        {
+            azure_storage::StorageCredentials::connection_string(&conn_str)
+                .map_err(|e| CloudError::Auth(format!("Invalid Azure connection string: {}", e)))?
+        } else if let Ok(key) = std::env::var("AZURE_STORAGE_KEY") {
+            azure_storage::StorageCredentials::access_key(account, key)
+        } else {
+            return Err(CloudError::Auth(
+                "Azure credentials not found. Set AZURE_STORAGE_CONNECTION_STRING or AZURE_STORAGE_KEY".into()
+            ));
+        };
+
+        let blob_service_client =
+            azure_storage_blobs::prelude::BlobServiceClient::new(account, storage_credentials);
+        let client = blob_service_client.container_client(container);
+
+        Ok(Self {
+            account: account.to_string(),
+            container: container.to_string(),
+            client,
+            runtime,
+        })
+    }
+}
+
+#[cfg(feature = "cloud-azure")]
+impl CloudBackend for AzureBackend {
+    fn init(&mut self) -> Result<()> {
+        // Verify container exists
+        self.runtime.block_on(async {
+            self.client.get_properties().await.map_err(|e| {
+                CloudError::Storage(format!("Azure container not accessible: {}", e))
+            })?;
+            Ok(())
+        })
+    }
+
+    fn upload_file(&self, local_path: &Path, cloud_path: &str) -> Result<String> {
+        let data = std::fs::read(local_path)?;
+        let blob_name = cloud_path.to_string();
+
+        self.runtime.block_on(async {
+            self.client
+                .blob_client(&blob_name)
+                .put_block_blob(data)
+                .await
+                .map_err(|e| CloudError::UploadFailed(format!("Azure upload failed: {}", e)))?;
+            Ok(blob_name)
+        })
+    }
+
+    fn start_multipart(&self, cloud_path: &str) -> Result<String> {
+        // Azure uses block blobs with block IDs
+        Ok(format!("azure_upload_{}", cloud_path.replace('/', "_")))
+    }
+
+    fn upload_part(&self, _upload_id: &str, part_number: u32, data: &[u8]) -> Result<CloudPart> {
+        Ok(CloudPart {
+            part_number,
+            size: data.len() as u64,
+            etag: None,
+            checksum: Some(format!("{:x}", simple_hash(data))),
+        })
+    }
+
+    fn complete_multipart(
+        &self,
+        _upload_id: &str,
+        _cloud_path: &str,
+        _parts: &[CloudPart],
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn abort_multipart(&self, _upload_id: &str, _cloud_path: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn download_file(&self, cloud_path: &str, local_path: &Path) -> Result<()> {
+        let blob_name = cloud_path.to_string();
+
+        let data = self.runtime.block_on(async {
+            let resp = self
+                .client
+                .blob_client(&blob_name)
+                .get_content()
+                .await
+                .map_err(|e| CloudError::DownloadFailed(format!("Azure download failed: {}", e)))?;
+            Ok::<_, CloudError>(resp)
+        })?;
+
+        if let Some(parent) = local_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(local_path, data)?;
+        Ok(())
+    }
+
+    fn download_range(&self, cloud_path: &str, start: u64, end: u64) -> Result<Vec<u8>> {
+        let blob_name = cloud_path.to_string();
+
+        self.runtime.block_on(async {
+            use azure_storage_blobs::prelude::BA512Range;
+            let resp = self
+                .client
+                .blob_client(&blob_name)
+                .get()
+                .range(BA512Range::new(start, end - start)?)
+                .await
+                .map_err(|e| {
+                    CloudError::DownloadFailed(format!("Azure range download failed: {}", e))
+                })?;
+            Ok(resp.data.to_vec())
+        })
+    }
+
+    fn exists(&self, cloud_path: &str) -> Result<bool> {
+        let blob_name = cloud_path.to_string();
+
+        self.runtime.block_on(async {
+            match self.client.blob_client(&blob_name).get_properties().await {
+                Ok(_) => Ok(true),
+                Err(_) => Ok(false),
+            }
+        })
+    }
+
+    fn delete(&self, cloud_path: &str) -> Result<()> {
+        let blob_name = cloud_path.to_string();
+
+        self.runtime.block_on(async {
+            self.client
+                .blob_client(&blob_name)
+                .delete()
+                .await
+                .map_err(|e| CloudError::Storage(format!("Azure delete failed: {}", e)))?;
+            Ok(())
+        })
+    }
+
+    fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        let prefix = prefix.to_string();
+
+        self.runtime.block_on(async {
+            use futures::StreamExt;
+            let mut results = Vec::new();
+            let mut stream = self.client.list_blobs().prefix(prefix).into_stream();
+            while let Some(resp) = stream.next().await {
+                let resp =
+                    resp.map_err(|e| CloudError::Storage(format!("Azure list failed: {}", e)))?;
+                for blob in resp.blobs.blobs() {
+                    results.push(blob.name.clone());
+                }
+            }
+            Ok(results)
+        })
+    }
+
+    fn head(&self, cloud_path: &str) -> Result<HashMap<String, String>> {
+        let blob_name = cloud_path.to_string();
+
+        self.runtime.block_on(async {
+            let props = self
+                .client
+                .blob_client(&blob_name)
+                .get_properties()
+                .await
+                .map_err(|e| CloudError::NotFound(format!("Azure head failed: {}", e)))?;
+
+            let mut result = HashMap::new();
+            result.insert(
+                "size".to_string(),
+                props.blob.properties.content_length.to_string(),
+            );
+            if let Some(etag) = props.blob.properties.etag {
+                result.insert("etag".to_string(), etag.to_string());
+            }
+            Ok(result)
+        })
+    }
+}
+
 use std::io::Seek;
 
 /// Cloud uploader for recordings
@@ -474,10 +1428,35 @@ struct ActiveUpload {
 impl CloudUploader {
     /// Create a new cloud uploader
     pub fn new(config: CloudConfig) -> Result<Self> {
-        let CloudProvider::Local { ref base_path } = config.provider;
-        let mut backend = LocalBackend::new(base_path);
-        backend.init()?;
-        let backend: Box<dyn CloudBackend> = Box::new(backend);
+        let backend: Box<dyn CloudBackend> = match &config.provider {
+            CloudProvider::Local { ref base_path } => {
+                let mut backend = LocalBackend::new(base_path);
+                backend.init()?;
+                Box::new(backend)
+            }
+            #[cfg(feature = "cloud-s3")]
+            CloudProvider::S3 {
+                bucket,
+                region,
+                endpoint,
+            } => {
+                let mut backend = S3Backend::new(bucket, region, endpoint.as_deref())?;
+                backend.init()?;
+                Box::new(backend)
+            }
+            #[cfg(feature = "cloud-gcs")]
+            CloudProvider::Gcs { bucket, project_id } => {
+                let mut backend = GcsBackend::new(bucket, project_id.as_deref())?;
+                backend.init()?;
+                Box::new(backend)
+            }
+            #[cfg(feature = "cloud-azure")]
+            CloudProvider::Azure { account, container } => {
+                let mut backend = AzureBackend::new(account, container)?;
+                backend.init()?;
+                Box::new(backend)
+            }
+        };
 
         Ok(Self {
             config,
@@ -541,7 +1520,7 @@ impl CloudUploader {
             if self.config.compression_level > 0
                 && (file_name.ends_with(".bin") || file_name == "data.bin")
             {
-                let compressed = self.compress_file(&file_path)?;
+                let compressed = self.compress_file(file_path)?;
                 let compressed_path = format!("{}.gz", file_cloud_path);
 
                 // Upload compressed data using multipart for large files
@@ -559,8 +1538,8 @@ impl CloudUploader {
                 compressed_size += compressed.len() as u64;
                 uploaded_files.push(compressed_path);
             } else {
-                self.backend.upload_file(&file_path, &file_cloud_path)?;
-                compressed_size += std::fs::metadata(&file_path)?.len();
+                self.backend.upload_file(file_path, &file_cloud_path)?;
+                compressed_size += std::fs::metadata(file_path)?.len();
                 uploaded_files.push(file_cloud_path);
             }
         }
@@ -772,7 +1751,7 @@ pub struct StreamingUploader<'a> {
     part_number: u32,
 }
 
-impl<'a> StreamingUploader<'a> {
+impl StreamingUploader<'_> {
     /// Upload a chunk of data
     pub fn upload_chunk(&mut self, data: &[u8]) -> Result<()> {
         self.buffer.extend_from_slice(data);

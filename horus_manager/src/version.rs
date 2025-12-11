@@ -100,7 +100,7 @@ fn find_horus_source() -> Option<PathBuf> {
         PathBuf::from("."),
         PathBuf::from(".."),
         PathBuf::from("../.."),
-        dirs::home_dir()?.join("horus/HORUS"),
+        dirs::home_dir()?.join("softmata/horus"),
         dirs::home_dir()?.join("HORUS"),
     ];
 

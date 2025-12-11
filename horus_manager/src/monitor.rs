@@ -10,7 +10,6 @@ use axum::{
     Json, Router,
 };
 use futures::{sink::SinkExt, stream::StreamExt};
-use horus_core::memory::shm_logs_path;
 use qrcode::{render::unicode, QrCode};
 use serde::Deserialize;
 use std::net::UdpSocket;
@@ -120,11 +119,6 @@ async fn dashboard_session_middleware(
 
 /// Run the web dashboard server
 pub async fn run(port: u16) -> anyhow::Result<()> {
-    eprintln!(
-        "Dashboard will read logs from shared memory ring buffer at {}",
-        shm_logs_path().display()
-    );
-
     // Check if password is configured, if not prompt for setup
     let password_hash = if !crate::security::auth::is_password_configured() {
         crate::security::auth::prompt_for_password_setup()?
@@ -765,9 +759,7 @@ pub async fn logs_all_handler() -> impl IntoResponse {
 pub async fn logs_node_handler(Path(node_name): Path<String>) -> impl IntoResponse {
     use horus_core::core::log_buffer::GLOBAL_LOG_BUFFER;
 
-    eprintln!(" API: Fetching logs for node '{}'", node_name);
     let logs = GLOBAL_LOG_BUFFER.get_for_node(&node_name);
-    eprintln!("[#] API: Found {} logs for '{}'", logs.len(), node_name);
 
     (
         StatusCode::OK,
@@ -788,16 +780,7 @@ pub async fn logs_topic_handler(Path(topic_name): Path<String>) -> impl IntoResp
         .unwrap_or(&topic_name)
         .to_string();
 
-    eprintln!(
-        " API: Fetching logs for topic '{}' (original: '{}')",
-        topic_name, original_topic
-    );
     let logs = GLOBAL_LOG_BUFFER.get_for_topic(&original_topic);
-    eprintln!(
-        "[#] API: Found {} logs for '{}'",
-        logs.len(),
-        original_topic
-    );
 
     (
         StatusCode::OK,
@@ -4676,8 +4659,6 @@ fn generate_html(port: u16) -> String {
 
             // Ensure canvas is properly sized when switching to graph view
             if (viewName === 'graph') {{
-                console.log('Switching to graph view - preserving node positions');
-
                 // Ensure canvas is properly sized after becoming visible
                 setTimeout(() => {{
                     const canvas = document.getElementById('graph-canvas');
@@ -4686,7 +4667,6 @@ fn generate_html(port: u16) -> String {
                         const rect = canvas.getBoundingClientRect();
                         canvas.width = rect.width || container.clientWidth || 1200;
                         canvas.height = rect.height || container.clientHeight || 600;
-                        console.log('Canvas resized to:', canvas.width, 'x', canvas.height);
                         // Re-render graph with new dimensions
                         if (window.graphState && window.graphState.nodes) {{
                             renderGraph(window.graphState.nodes, window.graphState.edges);
@@ -4698,7 +4678,6 @@ fn generate_html(port: u16) -> String {
 
         // Reset graph layout to default positions
         function resetGraphLayout() {{
-            console.log('Resetting graph layout to default positions');
             graphState.nodePositions = {{}};
             graphState.nodeVelocities = {{}};
             graphState.hoveredNode = null;
@@ -4816,9 +4795,7 @@ fn generate_html(port: u16) -> String {
                             </div>
                         </div>
                     `).join('');
-                    console.log(' Generated topics HTML:', topicsHtml.substring(0, 200));
                     topicsList.innerHTML = topicsHtml;
-                    console.log('Updated topics list. First topic element:', topicsList.querySelector('.topic-item'));
                 }}
             }} catch (error) {{
                 console.error('Failed to fetch topics:', error);
@@ -4939,7 +4916,6 @@ fn generate_html(port: u16) -> String {
 
             // Debug: Log canvas dimensions on first render
             if (!window.graphDebugLogged) {{
-                console.log('Graph canvas dimensions:', width, 'x', height);
                 window.graphDebugLogged = true;
             }}
 
@@ -4951,7 +4927,6 @@ fn generate_html(port: u16) -> String {
             const processNodes = nodes.filter(n => n.type === 'process');
             const topicNodes = nodes.filter(n => n.type === 'topic');
 
-            console.log(`[#] Graph data: ${{processNodes.length}} processes, ${{topicNodes.length}} topics, ${{edges.length}} edges`);
             if (topicNodes.length === 0) {{
                 console.warn(' No topic nodes found! Node types:', nodes.map(n => `${{n.id}}:${{n.type}}`));
             }}
@@ -4970,7 +4945,6 @@ fn generate_html(port: u16) -> String {
                                 nodes.some(n => !graphState.nodePositions[n.id]);
 
             if (needsLayout) {{
-                console.log(' Computing Barycenter layout...');
 
                 // Step 1: Build adjacency maps
                 const processToTopics = {{}};  // process_id -> [topic_ids]
@@ -5071,7 +5045,6 @@ fn generate_html(port: u16) -> String {
                     }}
                 }});
 
-                console.log(` Layout complete: ${{processOrder.length}} processes, ${{topicOrder.length}} topics`);
             }}
 
             // Draw edges with smooth Bézier curves (like rqt_graph)
@@ -5210,7 +5183,6 @@ fn generate_html(port: u16) -> String {
 
                 // Re-render if dimensions changed
                 if (oldWidth !== canvas.width || oldHeight !== canvas.height) {{
-                    console.log('Canvas resized:', canvas.width, 'x', canvas.height);
                     if (window.graphState && window.graphState.nodes) {{
                         renderGraph(window.graphState.nodes, window.graphState.edges);
                     }}
@@ -5226,10 +5198,7 @@ fn generate_html(port: u16) -> String {
             try {{
                 const response = await fetch('/api/graph');
                 const data = await response.json();
-                console.log('[#] Graph API Response:', data);
-                console.log(`   Nodes: ${{data.nodes?.length || 0}}, Edges: ${{data.edges?.length || 0}}`);
                 if (data.edges && data.edges.length > 0) {{
-                    console.log('   Edges:', data.edges);
                 }} else {{
                     console.warn(' No edges found! Cannot draw connection lines.');
                 }}
@@ -5250,7 +5219,6 @@ fn generate_html(port: u16) -> String {
         // Refresh all monitor data (triggers backend re-scan + updates frontend)
         // Backend performs fresh system scan on each API call - no caching
         async function refreshMonitorData() {{
-            console.log(' Refreshing monitor data (backend + frontend)...');
 
             // Reset graph layout to default positions
             resetGraphLayout();
@@ -5260,7 +5228,6 @@ fn generate_html(port: u16) -> String {
                 updateTopics(),     // Re-scans shared memory
                 updateGraphData()   // Re-builds graph from fresh data
             ]);
-            console.log(' Monitor data refreshed');
         }}
 
         // Cache frequently accessed DOM elements for performance
@@ -5453,7 +5420,6 @@ fn generate_html(port: u16) -> String {
             ws = new WebSocket(wsUrl);
 
             ws.onopen = () => {{
-                console.log('WebSocket connected - real-time updates enabled (20 FPS)');
                 wsConnected = true;
 
                 // Clear polling fallback if it was running
@@ -5585,7 +5551,6 @@ fn generate_html(port: u16) -> String {
             }};
 
             ws.onclose = () => {{
-                console.log('[WS] WebSocket disconnected, falling back to polling');
                 wsConnected = false;
 
                 // Fallback to polling (1 second interval to reduce load)
@@ -5609,7 +5574,6 @@ fn generate_html(port: u16) -> String {
         }}
 
         // Event delegation for node and topic clicks - SET UP EARLY!
-        console.log(' Setting up event delegation for nodes and topics');
 
         try {{
             document.addEventListener('click', (e) => {{
@@ -5638,7 +5602,6 @@ fn generate_html(port: u16) -> String {
                 }}
             }}, true);
 
-            console.log('Event delegation successfully attached!');
         }} catch (err) {{
             console.error('Failed to attach event delegation:', err);
         }}

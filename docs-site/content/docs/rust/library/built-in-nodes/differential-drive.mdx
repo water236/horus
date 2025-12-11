@@ -24,7 +24,7 @@ Differential drive controller for 2-wheeled mobile robots. Converts linear and a
 ## Quick Start
 
 ```rust
-use horus_library::nodes::DifferentialDriveNode;
+use horus_library::nodes::differential_drive::DifferentialDriveNode;
 use horus::prelude::*;
 use horus::prelude::*;
 
@@ -56,7 +56,7 @@ cmd_hub.send(Twist::new([0.5, 0.0, 0.0], [0.0, 0.0, 0.0]), None)?;
 ### Construction
 
 ```rust
-use horus_library::nodes::DifferentialDriveNode;
+use horus_library::nodes::differential_drive::DifferentialDriveNode;
 
 // Create with default topics ("cmd_vel", "drive_command", "odom")
 let mut diff_drive = DifferentialDriveNode::new()?;
@@ -167,7 +167,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Joystick Control
 
 ```rust
-use horus_library::nodes::DifferentialDriveNode;
+use horus_library::nodes::differential_drive::DifferentialDriveNode;
 use horus_library::{JoystickEvent, Twist};
 use horus_core::{Node, Hub, NodeInfo};
 

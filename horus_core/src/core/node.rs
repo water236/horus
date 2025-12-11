@@ -1121,6 +1121,63 @@ pub trait Node: Send {
     fn get_jit_arithmetic_params(&self) -> Option<(i64, i64)> {
         None
     }
+
+    // ==================== Checkpoint/Restore Support ====================
+    // These methods enable automatic state persistence for fault tolerance.
+    // Override these in nodes that have internal state to checkpoint.
+
+    /// Serialize node state for checkpointing.
+    ///
+    /// Override this method to save your node's internal state during checkpoints.
+    /// The returned bytes will be stored by the CheckpointManager and can be
+    /// restored later via `restore_state()`.
+    ///
+    /// # Returns
+    /// - `Some(Vec<u8>)` - Serialized state (e.g., using bincode or serde_json)
+    /// - `None` - This node has no state to checkpoint (default)
+    ///
+    /// # Example
+    /// ```ignore
+    /// fn checkpoint_state(&self) -> Option<Vec<u8>> {
+    ///     // Serialize internal state
+    ///     bincode::serialize(&self.internal_state).ok()
+    /// }
+    /// ```
+    fn checkpoint_state(&self) -> Option<Vec<u8>> {
+        None // Default: no state to checkpoint
+    }
+
+    /// Restore node state from a checkpoint.
+    ///
+    /// Override this method to restore your node's internal state from a checkpoint.
+    /// This is called during recovery after a crash or when loading a saved checkpoint.
+    ///
+    /// # Arguments
+    /// * `data` - The serialized state previously returned by `checkpoint_state()`
+    ///
+    /// # Returns
+    /// - `Ok(())` if state was restored successfully
+    /// - `Err(...)` if restoration failed (e.g., corrupted data, version mismatch)
+    ///
+    /// # Example
+    /// ```ignore
+    /// fn restore_state(&mut self, data: &[u8]) -> HorusResult<()> {
+    ///     self.internal_state = bincode::deserialize(data)
+    ///         .map_err(|e| HorusError::checkpoint(format!("Failed to deserialize: {}", e)))?;
+    ///     Ok(())
+    /// }
+    /// ```
+    fn restore_state(&mut self, _data: &[u8]) -> crate::error::HorusResult<()> {
+        Ok(()) // Default: no state to restore
+    }
+
+    /// Check if this node supports checkpointing.
+    ///
+    /// Returns true if this node has overridden `checkpoint_state()` and `restore_state()`.
+    /// Used by the scheduler to determine which nodes need state persistence.
+    fn supports_checkpointing(&self) -> bool {
+        false // Default: checkpointing not supported
+    }
 }
 
 // LogSummary implementations for primitive types
@@ -1181,5 +1238,413 @@ impl LogSummary for String {
 impl<T: fmt::Debug> LogSummary for Vec<T> {
     fn log_summary(&self) -> String {
         format!("Vec[{} items]", self.len())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // NodeState Tests
+    // =========================================================================
+
+    #[test]
+    fn test_node_state_display() {
+        assert_eq!(NodeState::Uninitialized.to_string(), "Uninitialized");
+        assert_eq!(NodeState::Initializing.to_string(), "Initializing");
+        assert_eq!(NodeState::Running.to_string(), "Running");
+        assert_eq!(NodeState::Paused.to_string(), "Paused");
+        assert_eq!(NodeState::Stopping.to_string(), "Stopping");
+        assert_eq!(NodeState::Stopped.to_string(), "Stopped");
+        assert_eq!(
+            NodeState::Error("test error".to_string()).to_string(),
+            "Error: test error"
+        );
+        assert_eq!(
+            NodeState::Crashed("crash reason".to_string()).to_string(),
+            "Crashed: crash reason"
+        );
+    }
+
+    #[test]
+    fn test_node_state_equality() {
+        assert_eq!(NodeState::Running, NodeState::Running);
+        assert_ne!(NodeState::Running, NodeState::Paused);
+        assert_eq!(
+            NodeState::Error("msg".to_string()),
+            NodeState::Error("msg".to_string())
+        );
+        assert_ne!(
+            NodeState::Error("msg1".to_string()),
+            NodeState::Error("msg2".to_string())
+        );
+    }
+
+    #[test]
+    fn test_node_state_clone() {
+        let state = NodeState::Error("test".to_string());
+        let cloned = state.clone();
+        assert_eq!(state, cloned);
+    }
+
+    // =========================================================================
+    // HealthStatus Tests
+    // =========================================================================
+
+    #[test]
+    fn test_health_status_as_str() {
+        assert_eq!(HealthStatus::Healthy.as_str(), "Healthy");
+        assert_eq!(HealthStatus::Warning.as_str(), "Warning");
+        assert_eq!(HealthStatus::Error.as_str(), "Error");
+        assert_eq!(HealthStatus::Critical.as_str(), "Critical");
+        assert_eq!(HealthStatus::Unknown.as_str(), "Unknown");
+    }
+
+    #[test]
+    fn test_health_status_color() {
+        assert_eq!(HealthStatus::Healthy.color(), "green");
+        assert_eq!(HealthStatus::Warning.color(), "yellow");
+        assert_eq!(HealthStatus::Error.color(), "orange");
+        assert_eq!(HealthStatus::Critical.color(), "red");
+        assert_eq!(HealthStatus::Unknown.color(), "gray");
+    }
+
+    #[test]
+    fn test_health_status_equality() {
+        assert_eq!(HealthStatus::Healthy, HealthStatus::Healthy);
+        assert_ne!(HealthStatus::Healthy, HealthStatus::Warning);
+    }
+
+    #[test]
+    fn test_health_status_copy() {
+        let status = HealthStatus::Healthy;
+        let copied = status;
+        assert_eq!(status, copied);
+    }
+
+    // =========================================================================
+    // NodeMetrics Tests
+    // =========================================================================
+
+    #[test]
+    fn test_node_metrics_default() {
+        let metrics = NodeMetrics::default();
+        assert_eq!(metrics.total_ticks, 0);
+        assert_eq!(metrics.successful_ticks, 0);
+        assert_eq!(metrics.failed_ticks, 0);
+        assert_eq!(metrics.avg_tick_duration_ms, 0.0);
+        assert_eq!(metrics.messages_sent, 0);
+        assert_eq!(metrics.messages_received, 0);
+        assert_eq!(metrics.errors_count, 0);
+    }
+
+    #[test]
+    fn test_node_metrics_clone() {
+        let metrics = NodeMetrics {
+            total_ticks: 100,
+            successful_ticks: 95,
+            failed_ticks: 5,
+            avg_tick_duration_ms: 10.5,
+            max_tick_duration_ms: 50.0,
+            min_tick_duration_ms: 1.0,
+            last_tick_duration_ms: 8.0,
+            messages_sent: 500,
+            messages_received: 300,
+            errors_count: 2,
+            warnings_count: 10,
+            uptime_seconds: 3600.0,
+        };
+        let cloned = metrics.clone();
+        assert_eq!(cloned.total_ticks, 100);
+        assert_eq!(cloned.successful_ticks, 95);
+        assert_eq!(cloned.avg_tick_duration_ms, 10.5);
+    }
+
+    // =========================================================================
+    // NodeConfig Tests
+    // =========================================================================
+
+    #[test]
+    fn test_node_config_default() {
+        let config = NodeConfig::default();
+        assert_eq!(config.max_tick_duration_ms, Some(1000));
+        assert!(config.restart_on_failure);
+        assert_eq!(config.max_restart_attempts, 3);
+        assert_eq!(config.restart_delay_ms, 1000);
+        assert!(config.enable_logging);
+        assert_eq!(config.log_level, "INFO");
+        assert!(config.custom_params.is_empty());
+    }
+
+    #[test]
+    fn test_node_config_clone() {
+        let mut config = NodeConfig::default();
+        config
+            .custom_params
+            .insert("key".to_string(), "value".to_string());
+        let cloned = config.clone();
+        assert_eq!(cloned.custom_params.get("key"), Some(&"value".to_string()));
+    }
+
+    // =========================================================================
+    // NodeHeartbeat Tests
+    // =========================================================================
+
+    #[test]
+    fn test_node_heartbeat_from_metrics_healthy() {
+        let metrics = NodeMetrics {
+            total_ticks: 100,
+            successful_ticks: 100,
+            failed_ticks: 0,
+            avg_tick_duration_ms: 10.0,
+            max_tick_duration_ms: 15.0,
+            min_tick_duration_ms: 5.0,
+            last_tick_duration_ms: 10.0,
+            messages_sent: 50,
+            messages_received: 50,
+            errors_count: 0,
+            warnings_count: 0,
+            uptime_seconds: 100.0,
+        };
+        let heartbeat = NodeHeartbeat::from_metrics(NodeState::Running, &metrics);
+        assert_eq!(heartbeat.health, HealthStatus::Healthy);
+        assert_eq!(heartbeat.tick_count, 100);
+    }
+
+    #[test]
+    fn test_node_heartbeat_from_metrics_warning() {
+        let metrics = NodeMetrics {
+            total_ticks: 100,
+            successful_ticks: 95,
+            failed_ticks: 5, // > 0 failed ticks triggers warning
+            avg_tick_duration_ms: 10.0,
+            ..NodeMetrics::default()
+        };
+        let heartbeat = NodeHeartbeat::from_metrics(NodeState::Running, &metrics);
+        assert_eq!(heartbeat.health, HealthStatus::Warning);
+    }
+
+    #[test]
+    fn test_node_heartbeat_from_metrics_error() {
+        let metrics = NodeMetrics {
+            total_ticks: 100,
+            errors_count: 5, // > 3 triggers error
+            ..NodeMetrics::default()
+        };
+        let heartbeat = NodeHeartbeat::from_metrics(NodeState::Running, &metrics);
+        assert_eq!(heartbeat.health, HealthStatus::Error);
+    }
+
+    #[test]
+    fn test_node_heartbeat_from_metrics_critical() {
+        let metrics = NodeMetrics {
+            total_ticks: 100,
+            errors_count: 15, // > 10 triggers critical
+            ..NodeMetrics::default()
+        };
+        let heartbeat = NodeHeartbeat::from_metrics(NodeState::Running, &metrics);
+        assert_eq!(heartbeat.health, HealthStatus::Critical);
+    }
+
+    #[test]
+    fn test_node_heartbeat_is_fresh() {
+        let metrics = NodeMetrics::default();
+        let heartbeat = NodeHeartbeat::from_metrics(NodeState::Running, &metrics);
+        // Just created, should be fresh within 5 seconds
+        assert!(heartbeat.is_fresh(5));
+    }
+
+    // =========================================================================
+    // NetworkStatus Tests
+    // =========================================================================
+
+    #[test]
+    fn test_network_status_new() {
+        let status = NetworkStatus::new("test_node", "SharedMemory");
+        assert_eq!(status.node_name, "test_node");
+        assert_eq!(status.transport_type, "SharedMemory");
+        assert!(status.local_endpoint.is_none());
+        assert!(status.remote_endpoints.is_empty());
+        assert_eq!(status.bytes_sent, 0);
+        assert_eq!(status.bytes_received, 0);
+    }
+
+    #[test]
+    fn test_network_status_is_fresh() {
+        let status = NetworkStatus::new("test_node", "Udp");
+        // Just created, should be fresh
+        assert!(status.is_fresh(5));
+    }
+
+    #[test]
+    fn test_network_status_clone() {
+        let mut status = NetworkStatus::new("test_node", "Udp");
+        status.bytes_sent = 1000;
+        status.bytes_received = 500;
+        status.remote_endpoints.push("192.168.1.1:9000".to_string());
+
+        let cloned = status.clone();
+        assert_eq!(cloned.bytes_sent, 1000);
+        assert_eq!(cloned.remote_endpoints.len(), 1);
+    }
+
+    // =========================================================================
+    // NodeInfo Tests
+    // =========================================================================
+
+    #[test]
+    fn test_node_info_new() {
+        let info = NodeInfo::new("test_node".to_string(), true);
+        assert_eq!(info.name(), "test_node");
+        assert_eq!(info.state(), &NodeState::Uninitialized);
+    }
+
+    #[test]
+    fn test_node_info_node_id_format() {
+        let info = NodeInfo::new("test_node".to_string(), true);
+        // node_id should contain the node name
+        assert!(info.node_id().starts_with("test_node_"));
+    }
+
+    #[test]
+    fn test_node_info_state_transitions() {
+        let mut info = NodeInfo::new("test_node".to_string(), true);
+
+        assert_eq!(info.state(), &NodeState::Uninitialized);
+
+        info.set_state(NodeState::Initializing);
+        assert_eq!(info.state(), &NodeState::Initializing);
+
+        info.set_state(NodeState::Running);
+        assert_eq!(info.state(), &NodeState::Running);
+
+        info.set_state(NodeState::Stopping);
+        assert_eq!(info.state(), &NodeState::Stopping);
+
+        info.set_state(NodeState::Stopped);
+        assert_eq!(info.state(), &NodeState::Stopped);
+    }
+
+    #[test]
+    fn test_node_info_priority() {
+        let mut info = NodeInfo::new("test_node".to_string(), true);
+        assert_eq!(info.priority(), 50); // Default priority is 50 (middle range)
+
+        info.set_priority(0);
+        assert_eq!(info.priority(), 0);
+
+        info.set_priority(100);
+        assert_eq!(info.priority(), 100);
+    }
+
+    #[test]
+    fn test_node_info_metrics_initial() {
+        let info = NodeInfo::new("test_node".to_string(), true);
+        let metrics = info.metrics();
+        assert_eq!(metrics.total_ticks, 0);
+        assert_eq!(metrics.successful_ticks, 0);
+        assert_eq!(metrics.failed_ticks, 0);
+    }
+
+    #[test]
+    fn test_node_info_error_logging() {
+        let mut info = NodeInfo::new("test_node".to_string(), true);
+
+        info.log_error("Test error 1");
+        info.log_error("Test error 2");
+
+        let metrics = info.metrics();
+        assert_eq!(metrics.errors_count, 2);
+    }
+
+    #[test]
+    fn test_node_info_uptime() {
+        let info = NodeInfo::new("test_node".to_string(), true);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let uptime = info.uptime();
+        assert!(uptime.as_millis() >= 10);
+    }
+
+    #[test]
+    fn test_node_info_transition_to_error() {
+        let mut info = NodeInfo::new("test_node".to_string(), true);
+        info.transition_to_error("Something went wrong".to_string());
+        assert!(matches!(info.state(), &NodeState::Error(_)));
+    }
+
+    #[test]
+    fn test_node_info_transition_to_crashed() {
+        let mut info = NodeInfo::new("test_node".to_string(), true);
+        info.transition_to_crashed("Fatal error".to_string());
+        assert!(matches!(info.state(), &NodeState::Crashed(_)));
+    }
+
+    #[test]
+    fn test_node_info_initialize_and_shutdown() {
+        let mut info = NodeInfo::new("test_node".to_string(), true);
+        assert_eq!(info.state(), &NodeState::Uninitialized);
+
+        info.initialize().unwrap();
+        assert_eq!(info.state(), &NodeState::Running);
+
+        info.shutdown().unwrap();
+        assert_eq!(info.state(), &NodeState::Stopped);
+    }
+
+    #[test]
+    fn test_node_info_with_config() {
+        let config = NodeConfig {
+            max_tick_duration_ms: Some(500),
+            restart_on_failure: false,
+            max_restart_attempts: 5,
+            ..Default::default()
+        };
+        let info = NodeInfo::new_with_config("test_node".to_string(), config);
+        assert_eq!(info.name(), "test_node");
+    }
+
+    // =========================================================================
+    // LogSummary Tests
+    // =========================================================================
+
+    #[test]
+    fn test_log_summary_f32() {
+        assert_eq!(std::f32::consts::PI.log_summary(), "3.142");
+        assert_eq!(0.0f32.log_summary(), "0.000");
+    }
+
+    #[test]
+    fn test_log_summary_f64() {
+        assert_eq!(std::f64::consts::PI.log_summary(), "3.142");
+    }
+
+    #[test]
+    fn test_log_summary_integers() {
+        assert_eq!(42i32.log_summary(), "42");
+        assert_eq!(42i64.log_summary(), "42");
+        assert_eq!(42u32.log_summary(), "42");
+        assert_eq!(42u64.log_summary(), "42");
+        assert_eq!(42usize.log_summary(), "42");
+    }
+
+    #[test]
+    fn test_log_summary_bool() {
+        assert_eq!(true.log_summary(), "true");
+        assert_eq!(false.log_summary(), "false");
+    }
+
+    #[test]
+    fn test_log_summary_string() {
+        assert_eq!("hello".to_string().log_summary(), "hello");
+    }
+
+    #[test]
+    fn test_log_summary_vec() {
+        let v: Vec<i32> = vec![1, 2, 3, 4, 5];
+        assert_eq!(v.log_summary(), "Vec[5 items]");
+
+        let empty: Vec<i32> = vec![];
+        assert_eq!(empty.log_summary(), "Vec[0 items]");
     }
 }

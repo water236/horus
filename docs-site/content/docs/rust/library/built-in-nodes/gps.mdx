@@ -130,7 +130,7 @@ horus_library = { version = "0.1", features = ["nmea-gps"] }
 ### Construction
 
 ```rust
-use horus_library::nodes::GpsNode;
+use horus_library::nodes::gps::GpsNode;
 
 // Create with default topic "gps.fix" in simulation mode
 let mut gps = GpsNode::new()?;

@@ -43,7 +43,7 @@ The HORUS IPC Benchmark is a comprehensive benchmark for measuring inter-process
 ### 1. Build the Benchmark
 
 ```bash
-cd /home/lord-patpak/horus/HORUS
+cd /home/lord-patpak/softmata/horus
 cargo build --release --bin ipc_benchmark
 ```
 
@@ -452,7 +452,7 @@ cd benchmarks && sudo ./benchmark_restore.sh
 ### File Locations
 
 ```
-HORUS/
+horus/
 ├── target/release/ipc_benchmark    ← Binary here
 └── benchmarks/
     ├── benchmark_results.json      ← Results saved here

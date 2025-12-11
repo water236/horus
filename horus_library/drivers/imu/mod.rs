@@ -7,6 +7,7 @@
 //! - `SimulationImuDriver` - Always available, generates synthetic data
 //! - `Mpu6050Driver` - MPU6050 6-axis IMU (requires `mpu6050-imu` feature)
 //! - `Bno055Driver` - BNO055 9-axis IMU with fusion (requires `bno055-imu` feature)
+//! - `Icm20948Driver` - ICM-20948 9-axis IMU (requires `icm20948-imu` feature)
 
 mod simulation;
 
@@ -16,6 +17,9 @@ mod mpu6050;
 #[cfg(feature = "bno055-imu")]
 mod bno055;
 
+#[cfg(feature = "icm20948-imu")]
+mod icm20948;
+
 // Re-exports
 pub use simulation::SimulationImuDriver;
 
@@ -24,6 +28,9 @@ pub use mpu6050::Mpu6050Driver;
 
 #[cfg(feature = "bno055-imu")]
 pub use bno055::Bno055Driver;
+
+#[cfg(feature = "icm20948-imu")]
+pub use icm20948::Icm20948Driver;
 
 use horus_core::driver::DriverStatus;
 use horus_core::error::HorusResult;
@@ -39,6 +46,8 @@ pub enum ImuDriverBackend {
     Mpu6050,
     #[cfg(feature = "bno055-imu")]
     Bno055,
+    #[cfg(feature = "icm20948-imu")]
+    Icm20948,
 }
 
 /// Type-erased IMU driver for runtime backend selection
@@ -48,6 +57,8 @@ pub enum ImuDriver {
     Mpu6050(Mpu6050Driver),
     #[cfg(feature = "bno055-imu")]
     Bno055(Bno055Driver),
+    #[cfg(feature = "icm20948-imu")]
+    Icm20948(Icm20948Driver),
 }
 
 impl ImuDriver {
@@ -59,6 +70,8 @@ impl ImuDriver {
             ImuDriverBackend::Mpu6050 => Ok(Self::Mpu6050(Mpu6050Driver::new()?)),
             #[cfg(feature = "bno055-imu")]
             ImuDriverBackend::Bno055 => Ok(Self::Bno055(Bno055Driver::new()?)),
+            #[cfg(feature = "icm20948-imu")]
+            ImuDriverBackend::Icm20948 => Ok(Self::Icm20948(Icm20948Driver::new()?)),
         }
     }
 
@@ -78,6 +91,8 @@ impl ImuDriver {
             Self::Mpu6050(d) => d.init(),
             #[cfg(feature = "bno055-imu")]
             Self::Bno055(d) => d.init(),
+            #[cfg(feature = "icm20948-imu")]
+            Self::Icm20948(d) => d.init(),
         }
     }
 
@@ -88,6 +103,8 @@ impl ImuDriver {
             Self::Mpu6050(d) => d.shutdown(),
             #[cfg(feature = "bno055-imu")]
             Self::Bno055(d) => d.shutdown(),
+            #[cfg(feature = "icm20948-imu")]
+            Self::Icm20948(d) => d.shutdown(),
         }
     }
 
@@ -98,6 +115,8 @@ impl ImuDriver {
             Self::Mpu6050(d) => d.is_available(),
             #[cfg(feature = "bno055-imu")]
             Self::Bno055(d) => d.is_available(),
+            #[cfg(feature = "icm20948-imu")]
+            Self::Icm20948(d) => d.is_available(),
         }
     }
 
@@ -108,6 +127,8 @@ impl ImuDriver {
             Self::Mpu6050(d) => d.status(),
             #[cfg(feature = "bno055-imu")]
             Self::Bno055(d) => d.status(),
+            #[cfg(feature = "icm20948-imu")]
+            Self::Icm20948(d) => d.status(),
         }
     }
 
@@ -122,6 +143,8 @@ impl ImuDriver {
             Self::Mpu6050(d) => d.read(),
             #[cfg(feature = "bno055-imu")]
             Self::Bno055(d) => d.read(),
+            #[cfg(feature = "icm20948-imu")]
+            Self::Icm20948(d) => d.read(),
         }
     }
 
@@ -132,6 +155,8 @@ impl ImuDriver {
             Self::Mpu6050(d) => d.has_data(),
             #[cfg(feature = "bno055-imu")]
             Self::Bno055(d) => d.has_data(),
+            #[cfg(feature = "icm20948-imu")]
+            Self::Icm20948(d) => d.has_data(),
         }
     }
 
@@ -142,6 +167,8 @@ impl ImuDriver {
             Self::Mpu6050(d) => d.sample_rate(),
             #[cfg(feature = "bno055-imu")]
             Self::Bno055(d) => d.sample_rate(),
+            #[cfg(feature = "icm20948-imu")]
+            Self::Icm20948(d) => d.sample_rate(),
         }
     }
 }

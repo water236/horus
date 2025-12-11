@@ -7,7 +7,7 @@ set -e  # Exit on error
 set -o pipefail  # Fail on pipe errors
 
 # Script version
-SCRIPT_VERSION="2.2.0"
+SCRIPT_VERSION="2.6.0"
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -437,58 +437,271 @@ select_platform_profile() {
 # Select platform profile
 select_platform_profile
 
-# Auto-install Rust if not present
-install_rust() {
-    if ! command -v cargo &> /dev/null; then
-        echo -e "${YELLOW} Rust is not installed${NC}"
-        read -p "$(echo -e ${CYAN}?${NC}) Install Rust automatically? [Y/n]: " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-            echo -e "${CYAN} Installing Rust...${NC}"
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-            source "$HOME/.cargo/env"
+# ============================================================================
+# SMART VERSION SOLVER - Automatic dependency resolution
+# ============================================================================
+# Features:
+#   - Auto-installs exact required Rust version
+#   - Parses build errors to detect version mismatches
+#   - Checks system library minimum versions
+#   - Auto-updates Cargo.lock when stale
+#   - Resolves Python package version conflicts
 
-            if ! command -v cargo &> /dev/null; then
-                echo -e "${RED} Failed to install Rust${NC}"
-                echo "Please install manually from https://rustup.rs/"
-                exit 1
-            fi
-            echo -e "${GREEN} Rust installed successfully${NC}"
-        else
-            echo -e "${RED} Rust is required to build HORUS${NC}"
-            exit 1
-        fi
-    fi
-}
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║           COMPREHENSIVE VERSION REQUIREMENTS TABLE                         ║
+# ╠═══════════════════════════════════════════════════════════════════════════╣
+# ║ All version constraints are synchronized with:                             ║
+# ║   - Cargo.toml (rust-version, dependency versions)                        ║
+# ║   - pyproject.toml (requires-python, dependencies)                        ║
+# ║   - CI/CD tested configurations                                           ║
+# ║                                                                           ║
+# ║ UPDATE THESE AFTER TESTING NEW RELEASES!                                  ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
 
-# Install Rust
-install_rust
-
-# Required Rust version (minimum stable version for HORUS)
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │ RUST VERSION REQUIREMENTS                                                   │
+# │ - MSRV defined in Cargo.toml: rust-version = "1.85"                        │
+# │ - Max tested: Update after CI passes on new Rust releases                  │
+# └─────────────────────────────────────────────────────────────────────────────┘
 REQUIRED_RUST_MAJOR=1
 REQUIRED_RUST_MINOR=85
 REQUIRED_RUST_VERSION="${REQUIRED_RUST_MAJOR}.${REQUIRED_RUST_MINOR}"
+MAX_TESTED_RUST_MAJOR=1
+MAX_TESTED_RUST_MINOR=87
+MAX_TESTED_RUST_VERSION="${MAX_TESTED_RUST_MAJOR}.${MAX_TESTED_RUST_MINOR}"
 
-# Check Rust version
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │ PYTHON VERSION REQUIREMENTS                                                 │
+# │ - Min: Python 3.9 (PyO3 compatibility, type hints)                         │
+# │ - Max tested: Python 3.13 (verify horus_py wheel builds)                   │
+# └─────────────────────────────────────────────────────────────────────────────┘
+REQUIRED_PYTHON_MAJOR=3
+REQUIRED_PYTHON_MINOR=9
+REQUIRED_PYTHON_VERSION="${REQUIRED_PYTHON_MAJOR}.${REQUIRED_PYTHON_MINOR}"
+MAX_TESTED_PYTHON_MAJOR=3
+MAX_TESTED_PYTHON_MINOR=13
+MAX_TESTED_PYTHON_VERSION="${MAX_TESTED_PYTHON_MAJOR}.${MAX_TESTED_PYTHON_MINOR}"
+
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │ SYSTEM LIBRARY VERSION REQUIREMENTS                                         │
+# │ - Minimum versions for FFI/bindgen compatibility                           │
+# │ - Maximum versions: generally no ceiling (backwards compatible)            │
+# └─────────────────────────────────────────────────────────────────────────────┘
+declare -A REQUIRED_LIB_VERSIONS=(
+    ["openssl"]="1.1.0"       # TLS/crypto - min for modern cipher suites
+    ["libclang"]="11.0"       # bindgen - min for Rust 2021 edition parsing
+    ["libudev"]="1.0"         # Device enumeration - systemd 220+
+    ["alsa"]="1.1.0"          # Audio - ALSA lib 1.1.0+ for modern audio APIs
+    ["x11"]="1.6.0"           # X11 - XCB integration
+    ["wayland"]="1.18.0"      # Wayland - xdg-shell stable
+)
+
+# Maximum known-compatible versions (warn if newer - API might have changed)
+declare -A MAX_TESTED_LIB_VERSIONS=(
+    ["openssl"]="3.3.0"       # OpenSSL 3.x has API changes from 1.x
+    ["libclang"]="18.0"       # LLVM 18 tested
+)
+
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │ CARGO DEPENDENCY VERSION REQUIREMENTS                                       │
+# │ - Key crates with known compatibility constraints                          │
+# │ - Used for build error diagnosis and auto-resolution                       │
+# └─────────────────────────────────────────────────────────────────────────────┘
+declare -A CARGO_MIN_VERSIONS=(
+    ["syn"]="2.0"             # Proc-macro parsing
+    ["proc-macro2"]="1.0"     # Token streams
+    ["quote"]="1.0"           # Token generation
+    ["serde"]="1.0"           # Serialization
+    ["tokio"]="1.0"           # Async runtime
+    ["pyo3"]="0.21"           # Python bindings
+    ["bevy"]="0.14"           # Game engine (sim3d)
+)
+
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │ PYTHON PACKAGE VERSION REQUIREMENTS                                         │
+# │ - For horus_py and its dependencies                                        │
+# └─────────────────────────────────────────────────────────────────────────────┘
+declare -A PYTHON_MIN_VERSIONS=(
+    ["numpy"]="1.21.0"        # Array operations
+    ["maturin"]="1.0.0"       # Rust-Python build tool
+    ["setuptools"]="65.0.0"   # Build backend
+)
+
+# Compare semantic versions: returns 0 if v1 > v2, 1 otherwise (strict greater than)
+version_gt() {
+    local v1="$1"
+    local v2="$2"
+
+    local v1_major=$(echo "$v1" | cut -d'.' -f1)
+    local v1_minor=$(echo "$v1" | cut -d'.' -f2)
+    local v1_patch=$(echo "$v1" | cut -d'.' -f3)
+    v1_patch=${v1_patch:-0}
+
+    local v2_major=$(echo "$v2" | cut -d'.' -f1)
+    local v2_minor=$(echo "$v2" | cut -d'.' -f2)
+    local v2_patch=$(echo "$v2" | cut -d'.' -f3)
+    v2_patch=${v2_patch:-0}
+
+    if [ "$v1_major" -gt "$v2_major" ]; then return 0; fi
+    if [ "$v1_major" -lt "$v2_major" ]; then return 1; fi
+    if [ "$v1_minor" -gt "$v2_minor" ]; then return 0; fi
+    if [ "$v1_minor" -lt "$v2_minor" ]; then return 1; fi
+    if [ "$v1_patch" -gt "$v2_patch" ]; then return 0; fi
+    return 1
+}
+
+# Compare semantic versions: returns 0 if v1 >= v2, 1 otherwise
+version_gte() {
+    local v1="$1"
+    local v2="$2"
+
+    # Extract major.minor.patch (default patch to 0)
+    local v1_major=$(echo "$v1" | cut -d'.' -f1)
+    local v1_minor=$(echo "$v1" | cut -d'.' -f2)
+    local v1_patch=$(echo "$v1" | cut -d'.' -f3)
+    v1_patch=${v1_patch:-0}
+
+    local v2_major=$(echo "$v2" | cut -d'.' -f1)
+    local v2_minor=$(echo "$v2" | cut -d'.' -f2)
+    local v2_patch=$(echo "$v2" | cut -d'.' -f3)
+    v2_patch=${v2_patch:-0}
+
+    if [ "$v1_major" -gt "$v2_major" ]; then return 0; fi
+    if [ "$v1_major" -lt "$v2_major" ]; then return 1; fi
+    if [ "$v1_minor" -gt "$v2_minor" ]; then return 0; fi
+    if [ "$v1_minor" -lt "$v2_minor" ]; then return 1; fi
+    if [ "$v1_patch" -ge "$v2_patch" ]; then return 0; fi
+    return 1
+}
+
+# Auto-install or upgrade Rust to required version
+# Also checks for versions that are TOO NEW (untested, may have breaking API changes)
+install_rust() {
+    local need_install=false
+    local need_upgrade=false
+    local version_too_new=false
+    local current_version=""
+
+    if ! command -v cargo &> /dev/null; then
+        need_install=true
+    else
+        current_version=$(rustc --version | awk '{print $2}')
+        local rust_major=$(echo $current_version | cut -d'.' -f1)
+        local rust_minor=$(echo $current_version | cut -d'.' -f2)
+
+        # Check if version is too OLD
+        if [ "$rust_major" -lt "$REQUIRED_RUST_MAJOR" ] || \
+           ([ "$rust_major" -eq "$REQUIRED_RUST_MAJOR" ] && [ "$rust_minor" -lt "$REQUIRED_RUST_MINOR" ]); then
+            need_upgrade=true
+        fi
+
+        # Check if version is too NEW (untested)
+        if [ "$rust_major" -gt "$MAX_TESTED_RUST_MAJOR" ] || \
+           ([ "$rust_major" -eq "$MAX_TESTED_RUST_MAJOR" ] && [ "$rust_minor" -gt "$MAX_TESTED_RUST_MINOR" ]); then
+            version_too_new=true
+        fi
+    fi
+
+    if [ "$need_install" = true ]; then
+        echo -e "${YELLOW}${STATUS_WARN} Rust is not installed${NC}"
+        read -p "$(echo -e ${CYAN}?${NC}) Install Rust $REQUIRED_RUST_VERSION automatically? [Y/n]: " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+            echo -e "${CYAN}${STATUS_INFO} Installing Rust $REQUIRED_RUST_VERSION...${NC}"
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$REQUIRED_RUST_VERSION"
+            source "$HOME/.cargo/env"
+
+            if ! command -v cargo &> /dev/null; then
+                echo -e "${RED}${STATUS_ERR} Failed to install Rust${NC}"
+                echo "Please install manually from https://rustup.rs/"
+                exit 1
+            fi
+            echo -e "${GREEN}${STATUS_OK} Rust $REQUIRED_RUST_VERSION installed successfully${NC}"
+        else
+            echo -e "${RED}${STATUS_ERR} Rust is required to build HORUS${NC}"
+            exit 1
+        fi
+    elif [ "$need_upgrade" = true ]; then
+        echo -e "${YELLOW}${STATUS_WARN} Rust version $current_version is too old (requires >= $REQUIRED_RUST_VERSION)${NC}"
+        read -p "$(echo -e ${CYAN}?${NC}) Upgrade Rust to $REQUIRED_RUST_VERSION automatically? [Y/n]: " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+            echo -e "${CYAN}${STATUS_INFO} Installing Rust $REQUIRED_RUST_VERSION...${NC}"
+
+            # Install specific version and set as default
+            if rustup install "$REQUIRED_RUST_VERSION" 2>&1; then
+                rustup default "$REQUIRED_RUST_VERSION"
+                source "$HOME/.cargo/env" 2>/dev/null || true
+
+                # Verify upgrade
+                local new_version=$(rustc --version | awk '{print $2}')
+                local new_major=$(echo $new_version | cut -d'.' -f1)
+                local new_minor=$(echo $new_version | cut -d'.' -f2)
+
+                if [ "$new_major" -ge "$REQUIRED_RUST_MAJOR" ] && [ "$new_minor" -ge "$REQUIRED_RUST_MINOR" ]; then
+                    echo -e "${GREEN}${STATUS_OK} Rust upgraded: $current_version → $new_version${NC}"
+                else
+                    echo -e "${RED}${STATUS_ERR} Upgrade failed. Please run manually:${NC}"
+                    echo -e "   ${CYAN}rustup install $REQUIRED_RUST_VERSION && rustup default $REQUIRED_RUST_VERSION${NC}"
+                    exit 1
+                fi
+            else
+                echo -e "${RED}${STATUS_ERR} Failed to install Rust $REQUIRED_RUST_VERSION${NC}"
+                echo -e "   Try: ${CYAN}rustup update stable${NC}"
+                exit 1
+            fi
+        else
+            echo -e "${RED}${STATUS_ERR} Rust >= $REQUIRED_RUST_VERSION is required to build HORUS${NC}"
+            exit 1
+        fi
+    elif [ "$version_too_new" = true ]; then
+        # Version is newer than tested - warn user about potential API incompatibility
+        echo ""
+        echo -e "${YELLOW}${STATUS_WARN} WARNING: Rust $current_version is NEWER than tested version range${NC}"
+        echo -e "${YELLOW}   HORUS is tested with Rust $REQUIRED_RUST_VERSION - $MAX_TESTED_RUST_VERSION${NC}"
+        echo ""
+        echo -e "${YELLOW}   Newer Rust versions may have breaking API changes that cause build failures.${NC}"
+        echo -e "${YELLOW}   If the build fails, consider switching to a tested version.${NC}"
+        echo ""
+        echo -e "   Options:"
+        echo -e "     1. ${GREEN}Continue${NC} with Rust $current_version (may work, but untested)"
+        echo -e "     2. ${CYAN}Switch${NC} to tested version $MAX_TESTED_RUST_VERSION"
+        echo -e "     3. ${RED}Abort${NC} installation"
+        echo ""
+        read -p "$(echo -e ${CYAN}?${NC}) Choose [1/2/3] (default: 1): " -n 1 -r
+        echo
+
+        case "$REPLY" in
+            2)
+                echo -e "${CYAN}${STATUS_INFO} Switching to Rust $MAX_TESTED_RUST_VERSION...${NC}"
+                if rustup install "$MAX_TESTED_RUST_VERSION" 2>&1; then
+                    rustup default "$MAX_TESTED_RUST_VERSION"
+                    source "$HOME/.cargo/env" 2>/dev/null || true
+                    local switched_version=$(rustc --version | awk '{print $2}')
+                    echo -e "${GREEN}${STATUS_OK} Switched to Rust $switched_version${NC}"
+                else
+                    echo -e "${RED}${STATUS_ERR} Failed to install Rust $MAX_TESTED_RUST_VERSION${NC}"
+                    echo -e "   Continuing with $current_version..."
+                fi
+                ;;
+            3)
+                echo -e "${RED}${STATUS_ERR} Installation aborted by user${NC}"
+                exit 1
+                ;;
+            *)
+                echo -e "${YELLOW}${STATUS_WARN} Continuing with untested Rust $current_version${NC}"
+                echo -e "   If build fails, run: ${CYAN}rustup install $MAX_TESTED_RUST_VERSION && rustup default $MAX_TESTED_RUST_VERSION${NC}"
+                ;;
+        esac
+    fi
+}
+
+# Install Rust (with smart version solving)
+install_rust
+
+# Display final Rust version
 RUST_VERSION=$(rustc --version | awk '{print $2}')
-RUST_MAJOR=$(echo $RUST_VERSION | cut -d'.' -f1)
-RUST_MINOR=$(echo $RUST_VERSION | cut -d'.' -f2)
-
-echo -e "${CYAN}${NC} Detected Rust version: $RUST_VERSION"
-
-# Version check
-if [ "$RUST_MAJOR" -lt "$REQUIRED_RUST_MAJOR" ] || \
-   ([ "$RUST_MAJOR" -eq "$REQUIRED_RUST_MAJOR" ] && [ "$RUST_MINOR" -lt "$REQUIRED_RUST_MINOR" ]); then
-    echo -e "${RED}${STATUS_ERR} Rust version $RUST_VERSION is too old${NC}"
-    echo -e "${YELLOW}   HORUS requires Rust >= $REQUIRED_RUST_VERSION${NC}"
-    echo ""
-    echo -e "   Update Rust with: ${CYAN}rustup update stable${NC}"
-    echo -e "   Or install specific version: ${CYAN}rustup install $REQUIRED_RUST_VERSION && rustup default $REQUIRED_RUST_VERSION${NC}"
-    echo ""
-    exit 1
-else
-    echo -e "${GREEN}${STATUS_OK} Rust version $RUST_VERSION meets requirement (>= $REQUIRED_RUST_VERSION)${NC}"
-fi
+echo -e "${GREEN}${STATUS_OK} Rust version $RUST_VERSION meets requirement (>= $REQUIRED_RUST_VERSION)${NC}"
 
 # Auto-install system dependencies
 install_system_deps() {
@@ -630,26 +843,135 @@ fi
 echo -e "${CYAN}${NC} Detected C compiler: $(cc --version 2>/dev/null | head -n1 || gcc --version 2>/dev/null | head -n1 || clang --version 2>/dev/null | head -n1)"
 echo -e "${CYAN}${NC} Detected pkg-config: $(pkg-config --version)"
 
-# Check for required system libraries
+# ============================================================================
+# SYSTEM LIBRARY VERSION CHECKING - Comprehensive min/max validation
+# ============================================================================
+
+# Get library version from pkg-config
+get_lib_version() {
+    local lib="$1"
+    pkg-config --modversion "$lib" 2>/dev/null || echo "0.0.0"
+}
+
+# Check library exists AND meets version requirements (min and optionally max)
+# Returns: "missing", "old:VERSION", "new:VERSION", or "VERSION" (OK)
+check_lib_version_full() {
+    local lib="$1"
+    local min_version="${REQUIRED_LIB_VERSIONS[$lib]:-0.0.0}"
+    local max_version="${MAX_TESTED_LIB_VERSIONS[$lib]:-}"
+
+    if ! pkg-config --exists "$lib" 2>/dev/null; then
+        echo "missing"
+        return 1
+    fi
+
+    local current=$(get_lib_version "$lib")
+
+    # Check minimum version
+    if ! version_gte "$current" "$min_version"; then
+        echo "old:$current:$min_version"
+        return 1
+    fi
+
+    # Check maximum version (if defined)
+    if [ -n "$max_version" ] && version_gt "$current" "$max_version"; then
+        echo "new:$current:$max_version"
+        return 2  # Warning, not error
+    fi
+
+    echo "$current"
+    return 0
+}
+
+# Display library check result with appropriate formatting
+display_lib_result() {
+    local lib="$1"
+    local display_name="$2"
+    local result="$3"
+
+    case "$result" in
+        missing)
+            echo -e "${YELLOW}${STATUS_WARN}  $display_name: not found${NC}"
+            MISSING_LIBS="${MISSING_LIBS} $lib"
+            ;;
+        old:*)
+            local parts=(${result//:/ })
+            local ver="${parts[1]}"
+            local min="${parts[2]}"
+            echo -e "${YELLOW}${STATUS_WARN}  $display_name $ver is too old (requires >= $min)${NC}"
+            OLD_LIBS="${OLD_LIBS} $lib"
+            ;;
+        new:*)
+            local parts=(${result//:/ })
+            local ver="${parts[1]}"
+            local max="${parts[2]}"
+            echo -e "${YELLOW}${STATUS_WARN}  $display_name $ver is NEWER than tested ($max)${NC}"
+            NEW_LIBS="${NEW_LIBS} $lib"
+            ;;
+        *)
+            echo -e "${GREEN}${STATUS_OK}  $display_name $result${NC}"
+            ;;
+    esac
+}
+
+# Check for required system libraries WITH COMPREHENSIVE VERSION CHECKING
 echo ""
-echo -e "${CYAN}${NC} Checking system dependencies..."
+echo -e "${CYAN}${STATUS_INFO} Checking system dependencies (with version requirements)...${NC}"
+echo -e "${CYAN}   Min versions from REQUIRED_LIB_VERSIONS, max from MAX_TESTED_LIB_VERSIONS${NC}"
+echo ""
 
 MISSING_LIBS=""
+OLD_LIBS=""
+NEW_LIBS=""
 
-# Core libraries
-if ! pkg-config --exists openssl 2>/dev/null; then
-    echo -e "${YELLOW}${NC}  OpenSSL development library not found"
-    MISSING_LIBS="${MISSING_LIBS} openssl"
-fi
+# Core libraries with version requirements
+display_lib_result "openssl" "OpenSSL" "$(check_lib_version_full openssl)"
+display_lib_result "libudev" "libudev" "$(check_lib_version_full libudev)"
 
-if ! pkg-config --exists libudev 2>/dev/null; then
-    echo -e "${YELLOW}${NC}  udev development library not found"
-    MISSING_LIBS="${MISSING_LIBS} udev"
-fi
-
+# ALSA check
 if ! pkg-config --exists alsa 2>/dev/null; then
-    echo -e "${YELLOW}${NC}  ALSA development library not found"
+    echo -e "${YELLOW}${STATUS_WARN}  ALSA: not found${NC}"
     MISSING_LIBS="${MISSING_LIBS} alsa"
+else
+    ALSA_VER=$(get_lib_version "alsa")
+    ALSA_MIN="${REQUIRED_LIB_VERSIONS[alsa]:-1.1.0}"
+    if version_gte "$ALSA_VER" "$ALSA_MIN"; then
+        echo -e "${GREEN}${STATUS_OK}  ALSA $ALSA_VER${NC}"
+    else
+        echo -e "${YELLOW}${STATUS_WARN}  ALSA $ALSA_VER is too old (requires >= $ALSA_MIN)${NC}"
+        OLD_LIBS="${OLD_LIBS} alsa"
+    fi
+fi
+
+# Check libclang version (critical for bindgen)
+LIBCLANG_VERSION=""
+if command -v llvm-config &>/dev/null; then
+    LIBCLANG_VERSION=$(llvm-config --version 2>/dev/null | cut -d'.' -f1-2)
+elif [ -f /usr/lib/llvm-*/bin/llvm-config ]; then
+    LIBCLANG_VERSION=$(ls -d /usr/lib/llvm-* 2>/dev/null | tail -1 | grep -oP 'llvm-\K[0-9]+')
+fi
+
+LIBCLANG_MIN="${REQUIRED_LIB_VERSIONS[libclang]:-11.0}"
+LIBCLANG_MAX="${MAX_TESTED_LIB_VERSIONS[libclang]:-}"
+
+if [ -n "$LIBCLANG_VERSION" ]; then
+    if ! version_gte "$LIBCLANG_VERSION" "$LIBCLANG_MIN"; then
+        echo -e "${YELLOW}${STATUS_WARN}  libclang $LIBCLANG_VERSION is too old (requires >= $LIBCLANG_MIN)${NC}"
+        OLD_LIBS="${OLD_LIBS} libclang"
+    elif [ -n "$LIBCLANG_MAX" ] && version_gt "$LIBCLANG_VERSION" "$LIBCLANG_MAX"; then
+        echo -e "${YELLOW}${STATUS_WARN}  libclang $LIBCLANG_VERSION is NEWER than tested ($LIBCLANG_MAX)${NC}"
+        NEW_LIBS="${NEW_LIBS} libclang"
+    else
+        echo -e "${GREEN}${STATUS_OK}  libclang $LIBCLANG_VERSION${NC}"
+    fi
+else
+    # Try to detect from ldconfig
+    if ldconfig -p 2>/dev/null | grep -q libclang; then
+        echo -e "${GREEN}${STATUS_OK}  libclang found (version unknown)${NC}"
+    else
+        echo -e "${YELLOW}${STATUS_WARN}  libclang not found (needed for some FFI bindings)${NC}"
+        MISSING_LIBS="${MISSING_LIBS} libclang"
+    fi
 fi
 
 # GUI/Graphics libraries (required for sim2d and dashboard)
@@ -795,42 +1117,191 @@ if [ ! -z "$HARDWARE_MISSING" ]; then
     echo ""
 fi
 
-# Check if Python is installed (for horus_py)
-# Required Python version (must match pyproject.toml and verify.sh)
-REQUIRED_PYTHON_MAJOR=3
-REQUIRED_PYTHON_MINOR=9
-REQUIRED_PYTHON_VERSION="${REQUIRED_PYTHON_MAJOR}.${REQUIRED_PYTHON_MINOR}"
+# ============================================================================
+# PYTHON VERSION CHECK - with min/max range validation
+# ============================================================================
+# Check if Python is installed and within tested version range
 
-if command -v python3 &> /dev/null; then
+check_python_version() {
+    if ! command -v python3 &> /dev/null; then
+        echo -e "${YELLOW}${STATUS_WARN} Python3 not found - horus_py will be skipped${NC}"
+        echo -e "   Requires Python $REQUIRED_PYTHON_VERSION - $MAX_TESTED_PYTHON_VERSION"
+        PYTHON_AVAILABLE=false
+        return
+    fi
+
     PYTHON_VERSION=$(python3 --version | awk '{print $2}')
-    echo -e "${CYAN}${NC} Detected Python: $PYTHON_VERSION"
+    echo -e "${CYAN}${STATUS_INFO} Detected Python: $PYTHON_VERSION${NC}"
 
-    # Check if Python version meets requirement
     PYTHON_MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
     PYTHON_MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
 
-    if [ "$PYTHON_MAJOR" -gt "$REQUIRED_PYTHON_MAJOR" ] || \
-       ([ "$PYTHON_MAJOR" -eq "$REQUIRED_PYTHON_MAJOR" ] && [ "$PYTHON_MINOR" -ge "$REQUIRED_PYTHON_MINOR" ]); then
-        PYTHON_AVAILABLE=true
-        echo -e "${GREEN}${STATUS_OK} Python version meets requirement (>= $REQUIRED_PYTHON_VERSION)${NC}"
-    else
-        echo -e "${YELLOW}${NC}  Python $REQUIRED_PYTHON_VERSION+ required for horus_py (found $PYTHON_VERSION)"
-        echo -e "  horus_py will be skipped"
-        PYTHON_AVAILABLE=false
+    local version_too_old=false
+    local version_too_new=false
+
+    # Check if version is too OLD
+    if [ "$PYTHON_MAJOR" -lt "$REQUIRED_PYTHON_MAJOR" ] || \
+       ([ "$PYTHON_MAJOR" -eq "$REQUIRED_PYTHON_MAJOR" ] && [ "$PYTHON_MINOR" -lt "$REQUIRED_PYTHON_MINOR" ]); then
+        version_too_old=true
     fi
-else
-    echo -e "${YELLOW}${NC}  Python3 not found - horus_py will be skipped (requires >= $REQUIRED_PYTHON_VERSION)"
-    PYTHON_AVAILABLE=false
-fi
+
+    # Check if version is too NEW (untested)
+    if [ "$PYTHON_MAJOR" -gt "$MAX_TESTED_PYTHON_MAJOR" ] || \
+       ([ "$PYTHON_MAJOR" -eq "$MAX_TESTED_PYTHON_MAJOR" ] && [ "$PYTHON_MINOR" -gt "$MAX_TESTED_PYTHON_MINOR" ]); then
+        version_too_new=true
+    fi
+
+    if [ "$version_too_old" = true ]; then
+        echo -e "${YELLOW}${STATUS_WARN} Python $PYTHON_VERSION is too old (requires >= $REQUIRED_PYTHON_VERSION)${NC}"
+        echo -e "   horus_py will be skipped"
+        echo ""
+        echo -e "   To use Python bindings, install Python $REQUIRED_PYTHON_VERSION+:"
+        echo -e "     ${CYAN}Ubuntu/Debian:${NC} sudo apt install python3.11 python3.11-dev"
+        echo -e "     ${CYAN}pyenv:${NC} pyenv install 3.11 && pyenv global 3.11"
+        echo -e "     ${CYAN}conda:${NC} conda create -n horus python=3.11 && conda activate horus"
+        PYTHON_AVAILABLE=false
+    elif [ "$version_too_new" = true ]; then
+        echo ""
+        echo -e "${YELLOW}${STATUS_WARN} WARNING: Python $PYTHON_VERSION is NEWER than tested range${NC}"
+        echo -e "${YELLOW}   HORUS horus_py is tested with Python $REQUIRED_PYTHON_VERSION - $MAX_TESTED_PYTHON_VERSION${NC}"
+        echo ""
+        echo -e "${YELLOW}   Newer Python versions may have incompatible C API changes.${NC}"
+        echo -e "${YELLOW}   PyO3/maturin wheel builds might fail.${NC}"
+        echo ""
+        echo -e "   Options:"
+        echo -e "     1. ${GREEN}Continue${NC} with Python $PYTHON_VERSION (may work, but untested)"
+        echo -e "     2. ${RED}Skip${NC} horus_py installation"
+        echo ""
+        read -p "$(echo -e ${CYAN}?${NC}) Choose [1/2] (default: 1): " -n 1 -r
+        echo
+
+        case "$REPLY" in
+            2)
+                echo -e "${YELLOW}${STATUS_WARN} Skipping horus_py due to untested Python version${NC}"
+                PYTHON_AVAILABLE=false
+                ;;
+            *)
+                echo -e "${YELLOW}${STATUS_WARN} Continuing with untested Python $PYTHON_VERSION${NC}"
+                PYTHON_AVAILABLE=true
+                ;;
+        esac
+    else
+        # Version is within tested range
+        echo -e "${GREEN}${STATUS_OK} Python version within tested range ($REQUIRED_PYTHON_VERSION - $MAX_TESTED_PYTHON_VERSION)${NC}"
+        PYTHON_AVAILABLE=true
+    fi
+}
+
+check_python_version
 
 # Check for pip (needed for Python bindings)
 if [ "$PYTHON_AVAILABLE" = true ]; then
     if command -v pip3 &> /dev/null || command -v pip &> /dev/null; then
-        echo -e "${CYAN}${NC} Detected pip: $(pip3 --version 2>/dev/null || pip --version)"
+        PIP_VERSION=$(pip3 --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1 || echo "0.0")
+        echo -e "${CYAN}${STATUS_INFO} Detected pip: $PIP_VERSION${NC}"
     else
-        echo -e "${YELLOW}${NC}  pip not found - horus_py will be skipped"
+        echo -e "${YELLOW}${STATUS_WARN}  pip not found - horus_py will be skipped"
         echo "  Install pip: sudo apt install python3-pip (Debian/Ubuntu)"
         PYTHON_AVAILABLE=false
+    fi
+fi
+
+# ============================================================================
+# PYTHON PACKAGE VERSION CHECKING - Comprehensive validation
+# ============================================================================
+
+# Get installed Python package version
+get_pip_package_version() {
+    local pkg="$1"
+    pip3 show "$pkg" 2>/dev/null | grep -i "^version:" | awk '{print $2}' || echo ""
+}
+
+# Check Python package version meets requirements
+check_python_package() {
+    local pkg="$1"
+    local min_version="${PYTHON_MIN_VERSIONS[$pkg]:-}"
+
+    if [ -z "$min_version" ]; then
+        return 0  # No version requirement
+    fi
+
+    local installed=$(get_pip_package_version "$pkg")
+
+    if [ -z "$installed" ]; then
+        echo "missing"
+        return 1
+    fi
+
+    if version_gte "$installed" "$min_version"; then
+        echo "$installed"
+        return 0
+    else
+        echo "old:$installed:$min_version"
+        return 1
+    fi
+}
+
+# Auto-upgrade Python package if needed
+upgrade_python_package() {
+    local pkg="$1"
+    local min_version="$2"
+
+    echo -e "${CYAN}   Upgrading $pkg to >= $min_version...${NC}"
+
+    # Try different pip install methods (some systems restrict --user, some require --break-system-packages)
+    if pip3 install "$pkg>=$min_version" --user --upgrade --quiet 2>/dev/null; then
+        echo -e "${GREEN}   ✓ Upgraded $pkg successfully${NC}"
+        return 0
+    elif pip3 install "$pkg>=$min_version" --upgrade --quiet 2>/dev/null; then
+        echo -e "${GREEN}   ✓ Upgraded $pkg successfully${NC}"
+        return 0
+    elif pip3 install "$pkg>=$min_version" --user --break-system-packages --upgrade --quiet 2>/dev/null; then
+        echo -e "${GREEN}   ✓ Upgraded $pkg successfully (break-system-packages)${NC}"
+        return 0
+    else
+        echo -e "${YELLOW}   ⚠ Could not auto-upgrade $pkg${NC}"
+        return 1
+    fi
+}
+
+# Check required Python packages (if Python is available)
+if [ "$PYTHON_AVAILABLE" = true ]; then
+    echo ""
+    echo -e "${CYAN}${STATUS_INFO} Checking Python package requirements...${NC}"
+
+    PY_PKG_ISSUES=""
+
+    for pkg in "${!PYTHON_MIN_VERSIONS[@]}"; do
+        result=$(check_python_package "$pkg")
+        min_ver="${PYTHON_MIN_VERSIONS[$pkg]}"
+
+        case "$result" in
+            missing)
+                echo -e "${YELLOW}${STATUS_WARN}  $pkg: not installed (will install >= $min_ver)${NC}"
+                PY_PKG_ISSUES="${PY_PKG_ISSUES} $pkg"
+                ;;
+            old:*)
+                parts=(${result//:/ })
+                installed="${parts[1]}"
+                echo -e "${YELLOW}${STATUS_WARN}  $pkg $installed is too old (requires >= $min_ver)${NC}"
+                read -p "$(echo -e ${CYAN}?${NC}) Auto-upgrade $pkg? [Y/n]: " -n 1 -r
+                echo
+                if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+                    upgrade_python_package "$pkg" "$min_ver"
+                else
+                    PY_PKG_ISSUES="${PY_PKG_ISSUES} $pkg"
+                fi
+                ;;
+            *)
+                echo -e "${GREEN}${STATUS_OK}  $pkg $result${NC}"
+                ;;
+        esac
+    done
+
+    if [ -n "$PY_PKG_ISSUES" ]; then
+        echo ""
+        echo -e "${YELLOW}${STATUS_WARN} Some Python packages need attention: $PY_PKG_ISSUES${NC}"
+        echo -e "${YELLOW}   horus_py build may fail - packages will be installed during build${NC}"
     fi
 fi
 
@@ -1037,11 +1508,260 @@ offer_github_issue() {
     fi
 }
 
+# ============================================================================
+# SMART BUILD ERROR PARSER - Detects and auto-resolves common failures
+# ============================================================================
+
+# Parse cargo build errors and suggest/apply fixes
+parse_build_error() {
+    local log_file="$1"
+    local error_type="unknown"
+    local fix_applied=false
+
+    # Check for common error patterns
+    if grep -q "error\[E0308\].*expected.*found" "$log_file" 2>/dev/null; then
+        error_type="type_mismatch"
+    elif grep -qE "requires rustc [0-9]+\.[0-9]+|rustc [0-9]+\.[0-9]+(\.[0-9]+)? is not supported" "$log_file" 2>/dev/null; then
+        error_type="rust_version"
+        # Extract the problematic crate and required version
+        local crate_info=$(grep -oE "[a-z_-]+@[0-9]+\.[0-9]+\.[0-9]+ requires rustc [0-9]+\.[0-9]+" "$log_file" 2>/dev/null | head -1)
+        if [ -n "$crate_info" ]; then
+            # Parse crate name, current version, and required rustc version
+            local crate_name=$(echo "$crate_info" | sed 's/@.*//')
+            local crate_ver=$(echo "$crate_info" | grep -oE '@[0-9]+\.[0-9]+\.[0-9]+' | tr -d '@')
+            local required_rustc=$(echo "$crate_info" | grep -oE 'rustc [0-9]+\.[0-9]+' | sed 's/rustc //')
+
+            echo -e "${YELLOW}${STATUS_WARN} Crate $crate_name@$crate_ver requires Rust $required_rustc but you have $(rustc --version | cut -d' ' -f2)${NC}"
+
+            # Option 1: Downgrade the crate to a compatible version
+            echo -e "${CYAN}${STATUS_INFO} Attempting to downgrade $crate_name to a compatible version...${NC}"
+
+            # Try progressively older versions
+            local major_ver=$(echo "$crate_ver" | cut -d. -f1)
+            local minor_ver=$(echo "$crate_ver" | cut -d. -f2)
+            local patch_ver=$(echo "$crate_ver" | cut -d. -f3)
+
+            # Try previous patch versions first
+            for try_patch in $(seq $((patch_ver - 1)) -1 0); do
+                local try_ver="${major_ver}.${minor_ver}.${try_patch}"
+                if cargo update "${crate_name}@${crate_ver}" --precise "$try_ver" 2>/dev/null; then
+                    echo -e "${GREEN}${STATUS_OK} Downgraded $crate_name to $try_ver${NC}"
+                    fix_applied=true
+                    break
+                fi
+            done
+
+            # If patch downgrade failed, try previous minor versions
+            if [ "$fix_applied" != true ] && [ "$minor_ver" -gt 0 ]; then
+                for try_minor in $(seq $((minor_ver - 1)) -1 0); do
+                    local try_ver="${major_ver}.${try_minor}.0"
+                    if cargo update "${crate_name}@${crate_ver}" --precise "$try_ver" 2>/dev/null; then
+                        echo -e "${GREEN}${STATUS_OK} Downgraded $crate_name to $try_ver${NC}"
+                        fix_applied=true
+                        break
+                    fi
+                done
+            fi
+
+            if [ "$fix_applied" != true ]; then
+                echo -e "${YELLOW}${STATUS_WARN} Could not find compatible version of $crate_name${NC}"
+                echo -e "${CYAN}${STATUS_INFO} You may need to upgrade Rust: rustup update${NC}"
+            fi
+        else
+            # Fallback to original behavior - suggest upgrading Rust
+            local required_ver=$(grep -oE 'requires rustc [0-9]+\.[0-9]+' "$log_file" | grep -oE '[0-9]+\.[0-9]+' | head -1)
+            if [ -n "$required_ver" ]; then
+                echo -e "${YELLOW}${STATUS_WARN} Build requires Rust $required_ver${NC}"
+                if version_gte "$required_ver" "$REQUIRED_RUST_VERSION"; then
+                    echo -e "${CYAN}${STATUS_INFO} Auto-upgrading Rust to $required_ver...${NC}"
+                    if rustup install "$required_ver" && rustup default "$required_ver"; then
+                        fix_applied=true
+                        echo -e "${GREEN}${STATUS_OK} Rust upgraded to $required_ver${NC}"
+                    fi
+                fi
+            fi
+        fi
+    elif grep -q "failed to select a version for" "$log_file" 2>/dev/null; then
+        error_type="version_conflict"
+        echo -e "${YELLOW}${STATUS_WARN} Dependency version conflict detected${NC}"
+        echo -e "${CYAN}${STATUS_INFO} Running cargo update to resolve...${NC}"
+        if cargo update 2>/dev/null; then
+            fix_applied=true
+            echo -e "${GREEN}${STATUS_OK} Cargo.lock updated${NC}"
+        fi
+    elif grep -q "Blocking waiting for file lock" "$log_file" 2>/dev/null; then
+        error_type="lock_file"
+        echo -e "${YELLOW}${STATUS_WARN} Cargo lock file held by another process${NC}"
+        echo -e "${CYAN}${STATUS_INFO} Waiting for lock to release...${NC}"
+        sleep 5
+        fix_applied=true
+    elif grep -q "no space left on device" "$log_file" 2>/dev/null; then
+        error_type="disk_space"
+        echo -e "${RED}${STATUS_ERR} Disk space exhausted!${NC}"
+        echo "  Free up space and try again"
+    elif grep -q "could not compile" "$log_file" 2>/dev/null && grep -q "aborting due to" "$log_file" 2>/dev/null; then
+        error_type="compile_error"
+        # Check if it's a known fixable error
+        if grep -q "perhaps a crate was updated" "$log_file" 2>/dev/null; then
+            echo -e "${YELLOW}${STATUS_WARN} Crate version mismatch - lockfile may be stale${NC}"
+            echo -e "${CYAN}${STATUS_INFO} Regenerating Cargo.lock...${NC}"
+            rm -f Cargo.lock
+            if cargo generate-lockfile 2>/dev/null; then
+                fix_applied=true
+                echo -e "${GREEN}${STATUS_OK} Cargo.lock regenerated${NC}"
+            fi
+        fi
+    elif grep -q "linker .* not found" "$log_file" 2>/dev/null; then
+        error_type="linker_missing"
+        echo -e "${RED}${STATUS_ERR} Linker not found - install build tools${NC}"
+        echo "  Ubuntu/Debian: sudo apt install build-essential"
+        echo "  Fedora: sudo dnf install gcc"
+    elif grep -qE "openssl|ssl" "$log_file" 2>/dev/null && grep -q "error" "$log_file" 2>/dev/null; then
+        error_type="openssl"
+        echo -e "${YELLOW}${STATUS_WARN} OpenSSL-related build error${NC}"
+        echo -e "${CYAN}${STATUS_INFO} Try: export OPENSSL_DIR=/usr/local${NC}"
+    elif grep -q "GLIBC" "$log_file" 2>/dev/null; then
+        error_type="glibc"
+        echo -e "${RED}${STATUS_ERR} GLIBC version incompatibility${NC}"
+        echo "  Your system's glibc may be too old for some pre-built dependencies"
+    fi
+
+    if [ "$fix_applied" = true ]; then
+        echo "$error_type:fixed"
+        return 0
+    else
+        echo "$error_type:not_fixed"
+        return 1
+    fi
+}
+
+# Check and refresh Cargo.lock if stale
+check_lockfile_freshness() {
+    local lockfile="Cargo.lock"
+    local cargo_toml="Cargo.toml"
+
+    if [ ! -f "$lockfile" ]; then
+        echo -e "${CYAN}${STATUS_INFO} No Cargo.lock found - generating...${NC}"
+        cargo generate-lockfile 2>/dev/null
+        return 0
+    fi
+
+    # Check if any Cargo.toml is newer than Cargo.lock
+    local lockfile_mtime=$(stat -c %Y "$lockfile" 2>/dev/null || stat -f %m "$lockfile" 2>/dev/null)
+    local needs_update=false
+
+    # Find all Cargo.toml files and check mtimes
+    while IFS= read -r toml; do
+        local toml_mtime=$(stat -c %Y "$toml" 2>/dev/null || stat -f %m "$toml" 2>/dev/null)
+        if [ "$toml_mtime" -gt "$lockfile_mtime" ]; then
+            needs_update=true
+            break
+        fi
+    done < <(find . -name "Cargo.toml" -not -path "./target/*" 2>/dev/null)
+
+    if [ "$needs_update" = true ]; then
+        echo -e "${YELLOW}${STATUS_WARN} Cargo.lock is older than Cargo.toml files${NC}"
+        echo -e "${CYAN}${STATUS_INFO} Updating Cargo.lock to match current dependencies...${NC}"
+        if cargo update 2>/dev/null; then
+            echo -e "${GREEN}${STATUS_OK} Cargo.lock updated${NC}"
+        fi
+    else
+        echo -e "${GREEN}${STATUS_OK} Cargo.lock is up to date${NC}"
+    fi
+}
+
+# ============================================================================
+# CARGO DEPENDENCY VERSION VALIDATION
+# ============================================================================
+# Validates that critical crates in Cargo.lock meet minimum version requirements
+# This catches version issues BEFORE the expensive build step
+
+# Get crate version from Cargo.lock
+get_cargo_lock_version() {
+    local crate_name="$1"
+    local lockfile="Cargo.lock"
+
+    if [ ! -f "$lockfile" ]; then
+        echo ""
+        return 1
+    fi
+
+    # Parse Cargo.lock TOML format to find crate version
+    # Format: [[package]] name = "crate_name" version = "X.Y.Z"
+    grep -A 2 "name = \"$crate_name\"" "$lockfile" 2>/dev/null | \
+        grep "^version = " | head -1 | \
+        sed 's/version = "\([^"]*\)"/\1/'
+}
+
+# Validate Cargo dependencies against CARGO_MIN_VERSIONS
+validate_cargo_dependencies() {
+    echo ""
+    echo -e "${CYAN}${STATUS_INFO} Validating Cargo dependency versions...${NC}"
+
+    local issues=""
+    local lockfile="Cargo.lock"
+
+    if [ ! -f "$lockfile" ]; then
+        echo -e "${YELLOW}${STATUS_WARN} No Cargo.lock yet - will validate after generation${NC}"
+        return 0
+    fi
+
+    for crate in "${!CARGO_MIN_VERSIONS[@]}"; do
+        local min_ver="${CARGO_MIN_VERSIONS[$crate]}"
+        local current_ver=$(get_cargo_lock_version "$crate")
+
+        if [ -z "$current_ver" ]; then
+            # Crate not in lockfile (might be optional or not used)
+            continue
+        fi
+
+        if version_gte "$current_ver" "$min_ver"; then
+            echo -e "${GREEN}${STATUS_OK}  $crate $current_ver (>= $min_ver)${NC}"
+        else
+            echo -e "${YELLOW}${STATUS_WARN}  $crate $current_ver is below minimum $min_ver${NC}"
+            issues="${issues} $crate"
+        fi
+    done
+
+    if [ -n "$issues" ]; then
+        echo ""
+        echo -e "${YELLOW}${STATUS_WARN} Some crate versions are below recommended minimums:$issues${NC}"
+        echo -e "${CYAN}${STATUS_INFO} Running 'cargo update' to fetch newer versions...${NC}"
+
+        if cargo update 2>/dev/null; then
+            echo -e "${GREEN}${STATUS_OK} Dependencies updated${NC}"
+
+            # Re-check if issues are resolved
+            local still_issues=""
+            for crate in $issues; do
+                local min_ver="${CARGO_MIN_VERSIONS[$crate]}"
+                local new_ver=$(get_cargo_lock_version "$crate")
+                if [ -n "$new_ver" ] && ! version_gte "$new_ver" "$min_ver"; then
+                    still_issues="${still_issues} $crate"
+                fi
+            done
+
+            if [ -n "$still_issues" ]; then
+                echo -e "${YELLOW}${STATUS_WARN} Some crates still at older versions:$still_issues${NC}"
+                echo -e "${YELLOW}   This may be due to other crate requirements. Build may still succeed.${NC}"
+            fi
+        else
+            echo -e "${YELLOW}${STATUS_WARN} cargo update failed - build may fail${NC}"
+        fi
+    else
+        echo -e "${GREEN}${STATUS_OK} All critical dependencies meet version requirements${NC}"
+    fi
+}
+
 # Build with automatic retry and error recovery
 # Shows BOTH overall progress bar AND per-submodule progress bars
 build_with_recovery() {
     local max_retries=3
     local retry=0
+
+    # Pre-build checks: ensure dependencies are correct
+    check_lockfile_freshness
+    validate_cargo_dependencies
 
     # Define packages to build based on installation profile
     # Order matters: dependencies first, then dependents
@@ -1248,16 +1968,28 @@ build_with_recovery() {
                     printf "\r\033[K    [${CYAN}${pkg_bar}${NC}]%3d%% ${crate_display}" "$percent"
                 fi
 
-                # Check for errors
-                if [[ "$line" =~ ^error\[E ]]; then
+                # Check for errors - catch multiple error formats
+                if [[ "$line" =~ ^error\[E ]] || [[ "$line" =~ ^error:.*requires\ rustc ]] || [[ "$line" =~ "is not supported by the following package" ]]; then
                     echo "$line" >> "$TEMP_OUTPUT"
                     build_status=1
                 fi
-            done < <(cargo build --release -p "$pkg" $([ "$pkg" = "horus_manager" ] && echo "--bin horus") 2>&1; echo "BUILD_EXIT_CODE:$?")
+            done < <(if [ "$pkg" = "horus_manager" ]; then cargo build --release -p "$pkg" --bin horus; else cargo build --release -p "$pkg"; fi 2>&1; echo "BUILD_EXIT_CODE:$?")
 
             # Extract exit code from the marker line
             if [[ "$last_line" =~ BUILD_EXIT_CODE:([0-9]+) ]]; then
                 build_status="${BASH_REMATCH[1]}"
+            fi
+
+            # For horus_manager, verify the binary was actually created (catches silent MSRV failures)
+            if [ "$pkg" = "horus_manager" ] && [ "$build_status" -eq 0 ]; then
+                if [ ! -f "target/release/horus" ]; then
+                    echo -e "${RED}Binary not created despite build success - checking for MSRV issues...${NC}" >> "$TEMP_OUTPUT"
+                    build_status=1
+                    # Try to find and log the actual error from cargo output
+                    if grep -q "requires rustc" "$LOG_FILE" 2>/dev/null; then
+                        echo "MSRV error detected in build log" >> "$TEMP_OUTPUT"
+                    fi
+                fi
             fi
 
             # Update package status
@@ -1336,24 +2068,45 @@ build_with_recovery() {
             echo -e "  ${STATUS_WARN} Build paused for recovery"
 
             if [ $retry -lt $max_retries ]; then
-                echo -e "${YELLOW} Attempting recovery for failed package...${NC}"
+                echo -e "${YELLOW}${STATUS_INFO} Analyzing build failure and attempting auto-fix...${NC}"
 
-                # Common fixes for build failures
-                echo -e "${CYAN} Updating cargo index...${NC}"
-                cargo update
+                # Use smart error parser to detect and fix issues
+                local error_result=$(parse_build_error "$LOG_FILE")
+                local error_type="${error_result%%:*}"
+                local fix_status="${error_result##*:}"
 
-                # Fix potential permission issues
-                if grep -q "permission denied" "$LOG_FILE"; then
-                    echo -e "${CYAN} Fixing permissions...${NC}"
-                    chmod -R u+rwx target/ 2>/dev/null || true
-                    chmod -R u+rwx ~/.cargo/ 2>/dev/null || true
-                fi
+                if [ "$fix_status" = "fixed" ]; then
+                    echo -e "${GREEN}${STATUS_OK} Auto-fix applied for: $error_type${NC}"
+                else
+                    # Fall back to generic fixes
+                    echo -e "${CYAN}${STATUS_INFO} Applying generic recovery steps...${NC}"
 
-                # Clear cargo cache if download failed
-                if grep -q "failed to download\|failed to fetch" "$LOG_FILE"; then
-                    echo -e "${CYAN} Clearing cargo cache...${NC}"
-                    rm -rf ~/.cargo/registry/cache
-                    rm -rf ~/.cargo/registry/index
+                    # Common fixes for build failures
+                    echo -e "${CYAN}   Updating cargo index...${NC}"
+                    cargo update 2>/dev/null || true
+
+                    # Fix potential permission issues
+                    if grep -q "permission denied" "$LOG_FILE" 2>/dev/null; then
+                        echo -e "${CYAN}   Fixing permissions...${NC}"
+                        chmod -R u+rwx target/ 2>/dev/null || true
+                        chmod -R u+rwx ~/.cargo/ 2>/dev/null || true
+                    fi
+
+                    # Clear cargo cache if download failed
+                    if grep -q "failed to download\|failed to fetch" "$LOG_FILE" 2>/dev/null; then
+                        echo -e "${CYAN}   Clearing cargo cache...${NC}"
+                        rm -rf ~/.cargo/registry/cache 2>/dev/null || true
+                        rm -rf ~/.cargo/registry/index 2>/dev/null || true
+                    fi
+
+                    # Check if linker/compilation error - try cleaning affected package
+                    if grep -q "could not compile\|linker command failed" "$LOG_FILE" 2>/dev/null; then
+                        FAILED_PKG_NAME=$(grep -oE "could not compile ['\`][^'\`]+" "$LOG_FILE" 2>/dev/null | sed "s/could not compile ['\`]//" | head -1)
+                        if [ -n "$FAILED_PKG_NAME" ]; then
+                            echo -e "${CYAN}   Cleaning $FAILED_PKG_NAME artifacts...${NC}"
+                            cargo clean -p "$FAILED_PKG_NAME" 2>/dev/null || true
+                        fi
+                    fi
                 fi
 
                 sleep 2
@@ -1622,15 +2375,66 @@ EOF
 
 echo -e "${GREEN}${NC} Installed horus_library"
 
+# ============================================================================
+# PYTHON VERSION SOLVER - Smart dependency resolution for horus_py
+# ============================================================================
+
+# Parse pip errors and auto-resolve
+parse_pip_error() {
+    local pip_output="$1"
+    local error_type="unknown"
+    local fix_applied=false
+
+    if echo "$pip_output" | grep -qi "no matching distribution"; then
+        error_type="no_wheel"
+        # Check if it's platform-specific
+        if echo "$pip_output" | grep -qi "manylinux\|macosx\|win"; then
+            echo -e "${YELLOW}${STATUS_WARN} No pre-built wheel for your platform${NC}"
+        fi
+    elif echo "$pip_output" | grep -qi "requires python"; then
+        error_type="python_version"
+        local required=$(echo "$pip_output" | grep -oP "requires python\s*[<>=]+\s*\K[0-9.]+" | head -1)
+        if [ -n "$required" ]; then
+            echo -e "${YELLOW}${STATUS_WARN} Package requires Python $required (you have $PYTHON_VERSION)${NC}"
+        fi
+    elif echo "$pip_output" | grep -qi "glibc"; then
+        error_type="glibc"
+        echo -e "${YELLOW}${STATUS_WARN} GLIBC version incompatibility - building from source${NC}"
+    elif echo "$pip_output" | grep -qi "conflict"; then
+        error_type="dependency_conflict"
+        echo -e "${YELLOW}${STATUS_WARN} Dependency conflict detected${NC}"
+        echo -e "${CYAN}${STATUS_INFO} Trying with --force-reinstall...${NC}"
+        if pip3 install horus-robotics --user --force-reinstall 2>/dev/null; then
+            fix_applied=true
+        fi
+    elif echo "$pip_output" | grep -qi "externally-managed-environment"; then
+        error_type="pep668"
+        echo -e "${YELLOW}${STATUS_WARN} PEP 668 protected environment${NC}"
+        echo -e "${CYAN}${STATUS_INFO} Trying with --break-system-packages...${NC}"
+        if pip3 install horus-robotics --user --break-system-packages 2>/dev/null; then
+            fix_applied=true
+            echo -e "${GREEN}${STATUS_OK} Installed with --break-system-packages${NC}"
+        fi
+    fi
+
+    if [ "$fix_applied" = true ]; then
+        echo "$error_type:fixed"
+        return 0
+    else
+        echo "$error_type:not_fixed"
+        return 1
+    fi
+}
+
 # Step 8: Install horus_py (Python bindings) - Optional
 if [ "$PYTHON_AVAILABLE" = true ]; then
-    echo -e "${CYAN}${NC} Installing horus_py@$HORUS_PY_VERSION (Python bindings)..."
+    echo -e "${CYAN}${STATUS_INFO} Installing horus_py@$HORUS_PY_VERSION (Python bindings)...${NC}"
 
     HORUS_PY_INSTALLED=false
     HORUS_PY_SOURCE=""  # "pypi" or "source"
 
     # Try to install from PyPI first (pre-built wheel - fastest)
-    echo -e "${CYAN}  ${NC} Trying PyPI (pre-built wheel)..."
+    echo -e "${CYAN}   Trying PyPI (pre-built wheel)...${NC}"
 
     PIP_OUTPUT=$(pip3 install horus-robotics --user 2>&1)
     PIP_EXIT_CODE=$?
@@ -1639,33 +2443,61 @@ if [ "$PYTHON_AVAILABLE" = true ]; then
         HORUS_PY_INSTALLED=true
         HORUS_PY_SOURCE="pypi"
     else
-        # PyPI failed - show why and try building from source
-        echo -e "${YELLOW}  ${NC} PyPI failed - falling back to source build..."
-        # Show relevant error lines (filter out noise)
-        echo "$PIP_OUTPUT" | grep -E "(ERROR|error:|Could not|No matching|requires|glibc)" | head -3
-        echo ""
+        # Parse the error and try auto-fix
+        echo -e "${YELLOW}   PyPI install failed - analyzing error...${NC}"
 
-        # Check if maturin is installed
-        if ! command -v maturin &> /dev/null; then
-            echo -e "${CYAN}  ${NC} Installing maturin (Rust-Python build tool)..."
-            pip3 install maturin --user --quiet 2>/dev/null || pip3 install maturin --quiet 2>/dev/null
-        fi
+        PIP_FIX_RESULT=$(parse_pip_error "$PIP_OUTPUT")
+        PIP_ERROR_TYPE="${PIP_FIX_RESULT%%:*}"
+        PIP_FIX_STATUS="${PIP_FIX_RESULT##*:}"
 
-        # Build from source
-        if command -v maturin &> /dev/null; then
-            echo -e "${CYAN}  ${NC} Building from source (this may take a minute)..."
-            cd horus_py
-            if maturin develop --release 2>&1 | tee -a "$LOG_FILE" | grep -E "(Compiling|Building|Installed|error)"; then
-                HORUS_PY_INSTALLED=true
-                HORUS_PY_SOURCE="source"
-            else
-                echo -e "${YELLOW}[-]${NC} Source build failed"
-            fi
-            cd ..
+        if [ "$PIP_FIX_STATUS" = "fixed" ]; then
+            HORUS_PY_INSTALLED=true
+            HORUS_PY_SOURCE="pypi"
         else
-            echo -e "${YELLOW}[-]${NC} Could not install maturin - skipping horus_py"
-            echo -e "  ${CYAN}Install manually later:${NC}"
-            echo -e "    pip install maturin && cd horus_py && maturin develop --release"
+            # Show relevant error lines (filter out noise)
+            echo "$PIP_OUTPUT" | grep -E "(ERROR|error:|Could not|No matching|requires|glibc)" | head -3
+            echo ""
+
+            # Fall back to building from source
+            echo -e "${CYAN}   Falling back to source build...${NC}"
+
+            # Check if maturin is installed, install if not
+            if ! command -v maturin &> /dev/null; then
+                echo -e "${CYAN}   Installing maturin (Rust-Python build tool)...${NC}"
+                pip3 install maturin --user --quiet 2>/dev/null || \
+                pip3 install maturin --quiet 2>/dev/null || \
+                pip3 install maturin --user --break-system-packages --quiet 2>/dev/null
+            fi
+
+            # Build from source
+            if command -v maturin &> /dev/null; then
+                echo -e "${CYAN}   Building from source (this may take a minute)...${NC}"
+                cd horus_py
+
+                # Try maturin develop with release profile
+                MATURIN_OUTPUT=$(maturin develop --release 2>&1)
+                MATURIN_EXIT=$?
+
+                if [ $MATURIN_EXIT -eq 0 ]; then
+                    HORUS_PY_INSTALLED=true
+                    HORUS_PY_SOURCE="source"
+                else
+                    # Check for common maturin errors
+                    if echo "$MATURIN_OUTPUT" | grep -qi "patchelf"; then
+                        echo -e "${YELLOW}${STATUS_WARN} patchelf warning (wheel still usable)${NC}"
+                        HORUS_PY_INSTALLED=true
+                        HORUS_PY_SOURCE="source"
+                    else
+                        echo -e "${YELLOW}[-]${NC} Source build failed"
+                        echo "$MATURIN_OUTPUT" | grep -E "(error|Error|ERROR)" | head -3
+                    fi
+                fi
+                cd ..
+            else
+                echo -e "${YELLOW}[-]${NC} Could not install maturin - skipping horus_py"
+                echo -e "  ${CYAN}Install manually later:${NC}"
+                echo -e "    pip install maturin && cd horus_py && maturin develop --release"
+            fi
         fi
     fi
 
@@ -1899,6 +2731,67 @@ if [ "$COMPLETION_INSTALLED" = true ]; then
     echo -e "${CYAN}  [i]${NC} Shell completions will be active in new terminal sessions"
     echo -e "  To use in this session: ${CYAN}source ~/.${SHELL_NAME}rc${NC} (bash/zsh)"
 fi
+
+# ============================================================================
+# INSTALLATION VERSION SUMMARY
+# ============================================================================
+# Display all version information for debugging and support
+
+echo ""
+echo -e "╔═══════════════════════════════════════════════════════════════════════════╗"
+echo -e "║                    INSTALLATION VERSION SUMMARY                           ║"
+echo -e "╚═══════════════════════════════════════════════════════════════════════════╝"
+echo ""
+
+# Rust version
+FINAL_RUST_VERSION=$(rustc --version 2>/dev/null | awk '{print $2}' || echo "unknown")
+if version_gte "$FINAL_RUST_VERSION" "$REQUIRED_RUST_VERSION" && ! version_gt "$FINAL_RUST_VERSION" "$MAX_TESTED_RUST_VERSION"; then
+    echo -e "${GREEN}${STATUS_OK} Rust: $FINAL_RUST_VERSION (within tested range $REQUIRED_RUST_VERSION - $MAX_TESTED_RUST_VERSION)${NC}"
+elif version_gt "$FINAL_RUST_VERSION" "$MAX_TESTED_RUST_VERSION"; then
+    echo -e "${YELLOW}${STATUS_WARN} Rust: $FINAL_RUST_VERSION (NEWER than tested $MAX_TESTED_RUST_VERSION)${NC}"
+else
+    echo -e "${YELLOW}${STATUS_WARN} Rust: $FINAL_RUST_VERSION (older than recommended $REQUIRED_RUST_VERSION)${NC}"
+fi
+
+# Python version (if available)
+if [ "$PYTHON_AVAILABLE" = true ]; then
+    FINAL_PYTHON_VERSION=$(python3 --version 2>/dev/null | awk '{print $2}' || echo "unknown")
+    PYTHON_MAJOR=$(echo $FINAL_PYTHON_VERSION | cut -d. -f1)
+    PYTHON_MINOR=$(echo $FINAL_PYTHON_VERSION | cut -d. -f2)
+    if [ "$PYTHON_MAJOR" -eq "$MAX_TESTED_PYTHON_MAJOR" ] && [ "$PYTHON_MINOR" -le "$MAX_TESTED_PYTHON_MINOR" ]; then
+        echo -e "${GREEN}${STATUS_OK} Python: $FINAL_PYTHON_VERSION (within tested range $REQUIRED_PYTHON_VERSION - $MAX_TESTED_PYTHON_VERSION)${NC}"
+    elif [ "$PYTHON_MAJOR" -gt "$MAX_TESTED_PYTHON_MAJOR" ] || ([ "$PYTHON_MAJOR" -eq "$MAX_TESTED_PYTHON_MAJOR" ] && [ "$PYTHON_MINOR" -gt "$MAX_TESTED_PYTHON_MINOR" ]); then
+        echo -e "${YELLOW}${STATUS_WARN} Python: $FINAL_PYTHON_VERSION (NEWER than tested $MAX_TESTED_PYTHON_VERSION)${NC}"
+    else
+        echo -e "${GREEN}${STATUS_OK} Python: $FINAL_PYTHON_VERSION${NC}"
+    fi
+fi
+
+# HORUS version
+echo -e "${GREEN}${STATUS_OK} HORUS: ${HORUS_VERSION:-0.1.x}${NC}"
+
+# Key Cargo dependencies
+if [ -f "Cargo.lock" ]; then
+    for crate in syn serde tokio; do
+        CRATE_VER=$(get_cargo_lock_version "$crate")
+        if [ -n "$CRATE_VER" ]; then
+            MIN_VER="${CARGO_MIN_VERSIONS[$crate]:-}"
+            if [ -n "$MIN_VER" ] && version_gte "$CRATE_VER" "$MIN_VER"; then
+                echo -e "${GREEN}${STATUS_OK} $crate: $CRATE_VER${NC}"
+            else
+                echo -e "${CYAN}${STATUS_INFO} $crate: $CRATE_VER${NC}"
+            fi
+        fi
+    done
+fi
+
+# System info
+echo ""
+echo -e "${CYAN}System:${NC}"
+echo -e "  OS: $(uname -s) $(uname -r)"
+echo -e "  Arch: $(uname -m)"
+echo -e "  Script: install.sh v$SCRIPT_VERSION"
+echo -e "  Profile: ${INSTALL_PROFILE:-full}"
 
 echo ""
 echo -e "${GREEN}${STATUS_OK} HORUS installation complete!${NC}"

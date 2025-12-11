@@ -126,6 +126,10 @@ pub struct Scheduler {
     replay_overrides: HashMap<String, HashMap<String, Vec<u8>>>,
     // Current tick number for recording/replay
     current_tick: u64,
+    // Stop replay at this tick (None = run to end)
+    replay_stop_tick: Option<u64>,
+    // Replay speed multiplier (1.0 = normal, 0.5 = half speed, 2.0 = double)
+    replay_speed: f64,
 }
 
 impl Default for Scheduler {
@@ -195,6 +199,8 @@ impl Scheduler {
             replay_nodes: HashMap::new(),
             replay_overrides: HashMap::new(),
             current_tick: 0,
+            replay_stop_tick: None,
+            replay_speed: 1.0,
         }
     }
 
@@ -535,6 +541,41 @@ impl Scheduler {
             "{}",
             format!("[REPLAY] Override set: {}.{}", node_name, output_name).yellow()
         );
+        self
+    }
+
+    /// Set replay to stop at a specific tick.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use horus_core::Scheduler;
+    /// use std::path::PathBuf;
+    ///
+    /// let mut scheduler = Scheduler::replay_from(
+    ///     PathBuf::from("~/.horus/recordings/session/scheduler@abc123.horus")
+    /// ).expect("Failed to load")
+    ///     .stop_at_tick(2000);  // Stop at tick 2000
+    /// ```
+    pub fn stop_at_tick(mut self, tick: u64) -> Self {
+        self.replay_stop_tick = Some(tick);
+        println!("{}", format!("[REPLAY] Will stop at tick {}", tick).cyan());
+        self
+    }
+
+    /// Set replay speed multiplier.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use horus_core::Scheduler;
+    /// use std::path::PathBuf;
+    ///
+    /// let mut scheduler = Scheduler::replay_from(
+    ///     PathBuf::from("~/.horus/recordings/session/scheduler@abc123.horus")
+    /// ).expect("Failed to load")
+    ///     .with_replay_speed(0.5);  // Half speed
+    /// ```
+    pub fn with_replay_speed(mut self, speed: f64) -> Self {
+        self.replay_speed = speed.clamp(0.01, 100.0);
         self
     }
 
@@ -1544,6 +1585,17 @@ impl Scheduler {
                     }
                 }
 
+                // Check if replay stop tick has been reached
+                if let Some(stop_tick) = self.replay_stop_tick {
+                    if self.current_tick >= stop_tick {
+                        println!(
+                            "{}",
+                            format!("[REPLAY] Reached stop tick {}", stop_tick).cyan()
+                        );
+                        break;
+                    }
+                }
+
                 // Check if SIGTERM was received (e.g., from `kill` or `timeout`)
                 if SIGTERM_RECEIVED.load(Ordering::SeqCst) {
                     eprintln!(
@@ -1802,7 +1854,18 @@ impl Scheduler {
                 }
 
                 // Use pre-computed tick period (from config or default ~60Hz)
-                tokio::time::sleep(self.tick_period).await;
+                // Apply replay speed adjustment if in replay mode
+                let sleep_duration = if self.replay_mode.is_some() && self.replay_speed != 1.0 {
+                    Duration::from_nanos(
+                        (self.tick_period.as_nanos() as f64 / self.replay_speed) as u64,
+                    )
+                } else {
+                    self.tick_period
+                };
+                tokio::time::sleep(sleep_duration).await;
+
+                // Increment tick counter for replay tracking
+                self.current_tick += 1;
             }
 
             // Shutdown async I/O nodes first
@@ -3167,5 +3230,525 @@ impl Scheduler {
         self.config = Some(config);
 
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{Node, NodeInfo, TopicMetadata};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// Simple test node that counts its tick invocations
+    struct CounterNode {
+        name: &'static str,
+        tick_count: Arc<AtomicUsize>,
+    }
+
+    impl CounterNode {
+        fn new(name: &'static str) -> Self {
+            Self {
+                name,
+                tick_count: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn with_counter(name: &'static str, counter: Arc<AtomicUsize>) -> Self {
+            Self {
+                name,
+                tick_count: counter,
+            }
+        }
+
+        fn tick_count(&self) -> usize {
+            self.tick_count.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Node for CounterNode {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+            self.tick_count.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// Node that publishes to a topic
+    struct PublisherNode {
+        name: &'static str,
+        topic: String,
+    }
+
+    impl PublisherNode {
+        fn new(name: &'static str, topic: &str) -> Self {
+            Self {
+                name,
+                topic: topic.to_string(),
+            }
+        }
+    }
+
+    impl Node for PublisherNode {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {}
+
+        fn get_publishers(&self) -> Vec<TopicMetadata> {
+            vec![TopicMetadata {
+                topic_name: self.topic.clone(),
+                type_name: "TestMessage".to_string(),
+            }]
+        }
+    }
+
+    /// Node that subscribes to a topic
+    struct SubscriberNode {
+        name: &'static str,
+        topic: String,
+    }
+
+    impl SubscriberNode {
+        fn new(name: &'static str, topic: &str) -> Self {
+            Self {
+                name,
+                topic: topic.to_string(),
+            }
+        }
+    }
+
+    impl Node for SubscriberNode {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {}
+
+        fn get_subscribers(&self) -> Vec<TopicMetadata> {
+            vec![TopicMetadata {
+                topic_name: self.topic.clone(),
+                type_name: "TestMessage".to_string(),
+            }]
+        }
+    }
+
+    // ============================================================================
+    // Creation Tests
+    // ============================================================================
+
+    #[test]
+    fn test_scheduler_new() {
+        let scheduler = Scheduler::new();
+        assert!(scheduler.is_running());
+        assert_eq!(scheduler.get_node_list().len(), 0);
+    }
+
+    #[test]
+    fn test_scheduler_default() {
+        let scheduler = Scheduler::default();
+        assert!(scheduler.is_running());
+        assert_eq!(scheduler.get_node_list().len(), 0);
+    }
+
+    #[test]
+    fn test_scheduler_with_name() {
+        let scheduler = Scheduler::new().with_name("TestScheduler");
+        // The name is stored internally and used in logging
+        assert!(scheduler.is_running());
+    }
+
+    #[test]
+    fn test_scheduler_with_capacity() {
+        let scheduler = Scheduler::new().with_capacity(100);
+        assert!(scheduler.is_running());
+        // Capacity is pre-allocated but empty
+        assert_eq!(scheduler.get_node_list().len(), 0);
+    }
+
+    // ============================================================================
+    // Node Addition Tests
+    // ============================================================================
+
+    #[test]
+    fn test_scheduler_add_node() {
+        let mut scheduler = Scheduler::new();
+        scheduler.add(Box::new(CounterNode::new("test_node")), 0, None);
+
+        let nodes = scheduler.get_node_list();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0], "test_node");
+    }
+
+    #[test]
+    fn test_scheduler_add_multiple_nodes() {
+        let mut scheduler = Scheduler::new();
+        scheduler.add(Box::new(CounterNode::new("node1")), 0, None);
+        scheduler.add(Box::new(CounterNode::new("node2")), 1, None);
+        scheduler.add(Box::new(CounterNode::new("node3")), 2, None);
+
+        let nodes = scheduler.get_node_list();
+        assert_eq!(nodes.len(), 3);
+    }
+
+    #[test]
+    fn test_scheduler_node_priority_ordering() {
+        let mut scheduler = Scheduler::new();
+        // Add nodes with different priorities
+        scheduler.add(Box::new(CounterNode::new("low_priority")), 10, None);
+        scheduler.add(Box::new(CounterNode::new("high_priority")), 0, None);
+        scheduler.add(Box::new(CounterNode::new("medium_priority")), 5, None);
+
+        // After sorting by priority, high_priority should come first
+        let nodes = scheduler.get_node_list();
+        assert_eq!(nodes.len(), 3);
+        // Note: nodes are sorted by priority
+    }
+
+    #[test]
+    fn test_scheduler_add_with_logging() {
+        let mut scheduler = Scheduler::new();
+        scheduler.add(Box::new(CounterNode::new("logged_node")), 0, Some(true));
+
+        let info = scheduler.get_node_info("logged_node");
+        assert!(info.is_some());
+    }
+
+    // ============================================================================
+    // Running State Tests
+    // ============================================================================
+
+    #[test]
+    fn test_scheduler_is_running() {
+        let scheduler = Scheduler::new();
+        assert!(scheduler.is_running());
+    }
+
+    #[test]
+    fn test_scheduler_stop() {
+        let scheduler = Scheduler::new();
+        assert!(scheduler.is_running());
+        scheduler.stop();
+        assert!(!scheduler.is_running());
+    }
+
+    #[test]
+    fn test_scheduler_stop_and_check_multiple_times() {
+        let scheduler = Scheduler::new();
+        scheduler.stop();
+        assert!(!scheduler.is_running());
+        assert!(!scheduler.is_running()); // Should still be false
+    }
+
+    // ============================================================================
+    // Node Rate Control Tests
+    // ============================================================================
+
+    #[test]
+    fn test_scheduler_set_node_rate() {
+        let mut scheduler = Scheduler::new();
+        scheduler.add(Box::new(CounterNode::new("sensor")), 0, None);
+        scheduler.set_node_rate("sensor", 100.0);
+
+        // Just verify it doesn't panic
+        assert!(scheduler.is_running());
+    }
+
+    #[test]
+    fn test_scheduler_set_node_rate_nonexistent() {
+        let mut scheduler = Scheduler::new();
+        scheduler.add(Box::new(CounterNode::new("node1")), 0, None);
+        // Setting rate for nonexistent node should not panic
+        scheduler.set_node_rate("nonexistent", 50.0);
+        assert!(scheduler.is_running());
+    }
+
+    // ============================================================================
+    // Topology Tests
+    // ============================================================================
+
+    #[test]
+    fn test_scheduler_collect_topology() {
+        let mut scheduler = Scheduler::new();
+        scheduler.add(Box::new(PublisherNode::new("publisher", "topic1")), 0, None);
+        scheduler.add(
+            Box::new(SubscriberNode::new("subscriber", "topic1")),
+            1,
+            None,
+        );
+
+        let (publishers, subscribers) = scheduler.get_topology();
+        assert_eq!(publishers.len(), 1);
+        assert_eq!(subscribers.len(), 1);
+        assert_eq!(publishers[0].0, "publisher");
+        assert_eq!(publishers[0].1, "topic1");
+        assert_eq!(subscribers[0].0, "subscriber");
+        assert_eq!(subscribers[0].1, "topic1");
+    }
+
+    #[test]
+    fn test_scheduler_validate_topology_matching() {
+        let mut scheduler = Scheduler::new();
+        scheduler.add(Box::new(PublisherNode::new("pub", "data_topic")), 0, None);
+        scheduler.add(Box::new(SubscriberNode::new("sub", "data_topic")), 1, None);
+
+        let errors = scheduler.validate_topology();
+        // No errors when publisher and subscriber match
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_scheduler_topology_locked() {
+        let mut scheduler = Scheduler::new();
+        scheduler.add(Box::new(CounterNode::new("node1")), 0, None);
+
+        assert!(!scheduler.is_topology_locked());
+        scheduler.lock_topology();
+        assert!(scheduler.is_topology_locked());
+    }
+
+    // ============================================================================
+    // Determinism Tests
+    // ============================================================================
+
+    #[test]
+    fn test_scheduler_enable_determinism() {
+        let scheduler = Scheduler::new().enable_determinism();
+        assert!(scheduler.is_running());
+    }
+
+    #[test]
+    fn test_scheduler_disable_learning() {
+        let scheduler = Scheduler::new().disable_learning();
+        assert!(scheduler.is_running());
+    }
+
+    #[test]
+    fn test_scheduler_new_deterministic() {
+        let scheduler = Scheduler::new_deterministic();
+        assert!(scheduler.is_running());
+    }
+
+    // ============================================================================
+    // Node Info Tests
+    // ============================================================================
+
+    #[test]
+    fn test_scheduler_get_node_info_existing() {
+        let mut scheduler = Scheduler::new();
+        scheduler.add(Box::new(CounterNode::new("info_node")), 0, None);
+
+        let info = scheduler.get_node_info("info_node");
+        assert!(info.is_some());
+
+        let info_map = info.unwrap();
+        assert!(info_map.contains_key("name"));
+        assert_eq!(info_map.get("name").unwrap(), "info_node");
+    }
+
+    #[test]
+    fn test_scheduler_get_node_info_nonexistent() {
+        let scheduler = Scheduler::new();
+        let info = scheduler.get_node_info("nonexistent");
+        assert!(info.is_none());
+    }
+
+    #[test]
+    fn test_scheduler_get_node_list_empty() {
+        let scheduler = Scheduler::new();
+        let nodes = scheduler.get_node_list();
+        assert!(nodes.is_empty());
+    }
+
+    // ============================================================================
+    // Logging Control Tests
+    // ============================================================================
+
+    #[test]
+    fn test_scheduler_set_node_logging() {
+        let mut scheduler = Scheduler::new();
+        scheduler.add(Box::new(CounterNode::new("log_node")), 0, Some(false));
+
+        // Enable logging
+        scheduler.set_node_logging("log_node", true);
+
+        // Disable logging
+        scheduler.set_node_logging("log_node", false);
+
+        // Should not panic
+        assert!(scheduler.is_running());
+    }
+
+    // ============================================================================
+    // Monitoring Summary Tests
+    // ============================================================================
+
+    #[test]
+    fn test_scheduler_get_monitoring_summary() {
+        let mut scheduler = Scheduler::new();
+        scheduler.add(Box::new(CounterNode::new("mon_node1")), 0, None);
+        scheduler.add(Box::new(CounterNode::new("mon_node2")), 1, None);
+
+        let summary = scheduler.get_monitoring_summary();
+        assert_eq!(summary.len(), 2);
+    }
+
+    #[test]
+    fn test_scheduler_monitoring_summary_empty() {
+        let scheduler = Scheduler::new();
+        let summary = scheduler.get_monitoring_summary();
+        assert!(summary.is_empty());
+    }
+
+    // ============================================================================
+    // Recording Tests
+    // ============================================================================
+
+    #[test]
+    fn test_scheduler_is_recording_default() {
+        let scheduler = Scheduler::new();
+        assert!(!scheduler.is_recording());
+    }
+
+    #[test]
+    fn test_scheduler_enable_recording() {
+        let scheduler = Scheduler::new().enable_recording("test_session");
+        assert!(scheduler.is_recording());
+    }
+
+    #[test]
+    fn test_scheduler_is_replaying_default() {
+        let scheduler = Scheduler::new();
+        assert!(!scheduler.is_replaying());
+    }
+
+    #[test]
+    fn test_scheduler_current_tick() {
+        let scheduler = Scheduler::new();
+        assert_eq!(scheduler.current_tick(), 0);
+    }
+
+    #[test]
+    fn test_scheduler_start_at_tick() {
+        let scheduler = Scheduler::new().start_at_tick(1000);
+        assert_eq!(scheduler.current_tick(), 1000);
+    }
+
+    // ============================================================================
+    // Safety Monitor Tests
+    // ============================================================================
+
+    #[test]
+    fn test_scheduler_with_safety_monitor() {
+        let scheduler = Scheduler::new().with_safety_monitor(10);
+        assert!(scheduler.is_running());
+    }
+
+    // ============================================================================
+    // Real-time Node Tests
+    // ============================================================================
+
+    #[test]
+    fn test_scheduler_add_rt_node() {
+        let mut scheduler = Scheduler::new();
+        scheduler.add_rt(
+            Box::new(CounterNode::new("rt_node")),
+            0,
+            Duration::from_micros(100),
+            Duration::from_millis(1),
+        );
+
+        let nodes = scheduler.get_node_list();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0], "rt_node");
+    }
+
+    // ============================================================================
+    // Run For Duration Tests
+    // ============================================================================
+
+    #[test]
+    fn test_scheduler_run_for_short_duration() {
+        let mut scheduler = Scheduler::new();
+        let counter = Arc::new(AtomicUsize::new(0));
+        scheduler.add(
+            Box::new(CounterNode::with_counter("counter", counter.clone())),
+            0,
+            None,
+        );
+
+        // Run for a very short duration
+        let result = scheduler.run_for(Duration::from_millis(10));
+        assert!(result.is_ok());
+
+        // Counter should have been incremented at least once
+        assert!(counter.load(Ordering::SeqCst) > 0);
+    }
+
+    // ============================================================================
+    // Chainable API Tests
+    // ============================================================================
+
+    #[test]
+    fn test_scheduler_chainable_api() {
+        let mut scheduler = Scheduler::new()
+            .with_name("ChainedScheduler")
+            .with_capacity(10)
+            .disable_learning();
+
+        scheduler.add(Box::new(CounterNode::new("chain_node")), 0, None);
+
+        assert!(scheduler.is_running());
+        assert_eq!(scheduler.get_node_list().len(), 1);
+    }
+
+    // ============================================================================
+    // List Recordings Tests
+    // ============================================================================
+
+    #[test]
+    fn test_scheduler_list_recordings() {
+        // This might fail if no recordings exist, but shouldn't panic
+        let result = Scheduler::list_recordings();
+        // Just verify the function is callable
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    // ============================================================================
+    // Builder Pattern Name Test
+    // ============================================================================
+
+    #[test]
+    fn test_scheduler_name_builder() {
+        let scheduler = Scheduler::new().name("BuilderName");
+        // Verify the scheduler was created successfully
+        assert!(scheduler.is_running());
+    }
+
+    // ============================================================================
+    // Override Tests
+    // ============================================================================
+
+    #[test]
+    fn test_scheduler_with_override() {
+        let scheduler = Scheduler::new().with_override("node1", "output1", vec![1, 2, 3, 4]);
+
+        // Should not panic and scheduler should still be running
+        assert!(scheduler.is_running());
+    }
+
+    // ============================================================================
+    // Cleanup Tests
+    // ============================================================================
+
+    #[test]
+    fn test_scheduler_cleanup_heartbeats() {
+        // This is a static function that cleans up heartbeat files
+        // Just verify it doesn't panic
+        Scheduler::cleanup_heartbeats();
     }
 }

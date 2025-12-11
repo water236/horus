@@ -26,6 +26,9 @@ use crate::drivers::imu::Mpu6050Driver;
 #[cfg(feature = "bno055-imu")]
 use crate::drivers::imu::Bno055Driver;
 
+#[cfg(feature = "icm20948-imu")]
+use crate::drivers::imu::Icm20948Driver;
+
 /// IMU backend type (deprecated - use ImuDriverBackend instead)
 ///
 /// This enum is kept for backward compatibility. New code should use
@@ -50,7 +53,10 @@ impl From<ImuBackend> for ImuDriverBackend {
             ImuBackend::Bno055 => ImuDriverBackend::Bno055,
             #[cfg(not(feature = "bno055-imu"))]
             ImuBackend::Bno055 => ImuDriverBackend::Simulation, // Fallback
-            ImuBackend::Icm20948 => ImuDriverBackend::Simulation, // Not yet supported
+            #[cfg(feature = "icm20948-imu")]
+            ImuBackend::Icm20948 => ImuDriverBackend::Icm20948,
+            #[cfg(not(feature = "icm20948-imu"))]
+            ImuBackend::Icm20948 => ImuDriverBackend::Simulation, // Fallback
         }
     }
 }
@@ -476,3 +482,7 @@ pub type Mpu6050ImuNode<P = PassThrough<Imu>> = ImuNode<Mpu6050Driver, P>;
 #[cfg(feature = "bno055-imu")]
 /// ImuNode with Bno055Driver
 pub type Bno055ImuNode<P = PassThrough<Imu>> = ImuNode<Bno055Driver, P>;
+
+#[cfg(feature = "icm20948-imu")]
+/// ImuNode with Icm20948Driver
+pub type Icm20948ImuNode<P = PassThrough<Imu>> = ImuNode<Icm20948Driver, P>;

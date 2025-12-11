@@ -336,11 +336,11 @@ scheduler.add(Box::new(logger), 100, None);
 ```rust
 // BAD: 50 small nodes
 for i in 0..50 {
-    scheduler.add(TinyNode::new(i));
+    scheduler.add(Box::new(TinyNode::new(i)), 50, None);
 }
 
 // GOOD: One aggregated node
-scheduler.add(AggregatedNode::new());
+scheduler.add(Box::new(AggregatedNode::new()), 50, None);
 ```
 
 **Fewer nodes** = less scheduling overhead.

@@ -73,7 +73,7 @@ CATEGORY="${1:-all}"
 
 # Build all test binaries first
 print_header "Building Test Binaries"
-cd /home/lord-patpak/horus/HORUS
+cd /home/lord-patpak/softmata/horus
 echo "Building in release mode for accurate testing..."
 if ! cargo build --release --bins 2>&1 | grep -E "(Compiling|Finished|error)"; then
     echo -e "${RED}Build failed!${NC}"

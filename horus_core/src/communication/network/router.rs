@@ -1,5 +1,4 @@
 use crate::communication::network::fragmentation::{Fragment, FragmentManager};
-use log::{error, warn};
 /// High-performance async router client backend
 ///
 /// Optimizations:
@@ -13,6 +12,7 @@ use crate::communication::network::protocol::{HorusPacket, MessageType};
 use crate::error::HorusResult;
 use crossbeam::channel::{bounded, Receiver, Sender};
 use crossbeam::queue::SegQueue;
+use log::{error, warn};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

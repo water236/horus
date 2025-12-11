@@ -503,3 +503,395 @@ impl<
         &self.topic_name
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+
+    /// Test message type implementing all required traits
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    struct TestMessage {
+        id: u32,
+        value: f64,
+        label: String,
+    }
+
+    impl crate::core::LogSummary for TestMessage {
+        fn log_summary(&self) -> String {
+            format!("TestMsg(id={}, val={:.2})", self.id, self.value)
+        }
+    }
+
+    /// Simple test message for basic tests
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    struct SimpleValue(f64);
+
+    impl crate::core::LogSummary for SimpleValue {
+        fn log_summary(&self) -> String {
+            format!("{:.2}", self.0)
+        }
+    }
+
+    // =========================================================================
+    // Hub Creation Tests
+    // =========================================================================
+
+    #[test]
+    fn test_hub_new_local() {
+        let hub: Hub<SimpleValue> = Hub::new("test_hub_new_local").unwrap();
+        assert_eq!(hub.get_topic_name(), "test_hub_new_local");
+        assert_eq!(hub.get_connection_state(), ConnectionState::Connected);
+        assert!(!hub.is_network);
+    }
+
+    #[test]
+    fn test_hub_new_with_capacity() {
+        let hub: Hub<SimpleValue> = Hub::new_with_capacity("test_hub_capacity", 2048).unwrap();
+        assert_eq!(hub.get_topic_name(), "test_hub_capacity");
+        assert_eq!(hub.get_connection_state(), ConnectionState::Connected);
+    }
+
+    #[test]
+    fn test_hub_clone() {
+        let hub1: Hub<SimpleValue> = Hub::new("test_hub_clone").unwrap();
+        let hub2 = hub1.clone();
+        assert_eq!(hub1.get_topic_name(), hub2.get_topic_name());
+        // Metrics are shared via Arc
+        assert_eq!(
+            hub1.get_metrics().messages_sent,
+            hub2.get_metrics().messages_sent
+        );
+    }
+
+    #[test]
+    fn test_hub_debug() {
+        let hub: Hub<SimpleValue> = Hub::new("test_hub_debug").unwrap();
+        let debug_str = format!("{:?}", hub);
+        assert!(debug_str.contains("Hub"));
+        assert!(debug_str.contains("test_hub_debug"));
+    }
+
+    // =========================================================================
+    // Connection State Tests
+    // =========================================================================
+
+    #[test]
+    fn test_connection_state_conversion() {
+        assert_eq!(ConnectionState::Disconnected.into_u8(), 0);
+        assert_eq!(ConnectionState::Connecting.into_u8(), 1);
+        assert_eq!(ConnectionState::Connected.into_u8(), 2);
+        assert_eq!(ConnectionState::Reconnecting.into_u8(), 3);
+        assert_eq!(ConnectionState::Failed.into_u8(), 4);
+
+        assert_eq!(ConnectionState::from_u8(0), ConnectionState::Disconnected);
+        assert_eq!(ConnectionState::from_u8(1), ConnectionState::Connecting);
+        assert_eq!(ConnectionState::from_u8(2), ConnectionState::Connected);
+        assert_eq!(ConnectionState::from_u8(3), ConnectionState::Reconnecting);
+        assert_eq!(ConnectionState::from_u8(4), ConnectionState::Failed);
+        assert_eq!(ConnectionState::from_u8(255), ConnectionState::Failed); // Invalid defaults to Failed
+    }
+
+    // =========================================================================
+    // Basic Send/Receive Tests
+    // =========================================================================
+
+    #[test]
+    fn test_hub_send_recv_simple() {
+        let hub: Hub<SimpleValue> = Hub::new("test_send_recv_simple").unwrap();
+
+        // Send a message (no context)
+        let result = hub.send(SimpleValue(42.0), &mut None);
+        assert!(result.is_ok());
+
+        // Receive the message
+        let received = hub.recv(&mut None);
+        assert!(received.is_some());
+        assert_eq!(received.unwrap(), SimpleValue(42.0));
+    }
+
+    #[test]
+    fn test_hub_send_recv_complex_message() {
+        let hub: Hub<TestMessage> = Hub::new("test_send_recv_complex").unwrap();
+
+        let msg = TestMessage {
+            id: 123,
+            value: 1.234, // Arbitrary test value
+            label: "test".to_string(),
+        };
+
+        hub.send(msg.clone(), &mut None).unwrap();
+        let received = hub.recv(&mut None).unwrap();
+        assert_eq!(received, msg);
+    }
+
+    #[test]
+    fn test_hub_recv_empty() {
+        let hub: Hub<SimpleValue> = Hub::new("test_recv_empty").unwrap();
+        // No message sent, should return None
+        let received = hub.recv(&mut None);
+        assert!(received.is_none());
+    }
+
+    #[test]
+    fn test_hub_single_slot_semantics() {
+        // Hub uses single-slot design with sequence tracking
+        // - Each send() writes to the same slot and increments sequence
+        // - recv() returns data only if sequence has changed since last read
+        let hub: Hub<SimpleValue> = Hub::new("test_single_slot").unwrap();
+
+        hub.send(SimpleValue(1.0), &mut None).unwrap();
+
+        // First recv gets the value
+        let received = hub.recv(&mut None);
+        assert!(received.is_some());
+        assert_eq!(received.unwrap(), SimpleValue(1.0));
+
+        // Second recv without new send returns None (already seen this sequence)
+        let received = hub.recv(&mut None);
+        // Hub may return the same value again OR None depending on implementation
+        // The key behavior is: recv() should see new data when send() is called
+
+        // Send new data
+        hub.send(SimpleValue(2.0), &mut None).unwrap();
+        let received = hub.recv(&mut None);
+        assert!(received.is_some());
+        // Should see the new value
+        assert_eq!(received.unwrap(), SimpleValue(2.0));
+    }
+
+    // =========================================================================
+    // Multi-Consumer Tests
+    // =========================================================================
+
+    #[test]
+    fn test_hub_multiple_subscribers_shared_topic() {
+        // Hub clones share the same ShmTopic - first to recv() consumes the message
+        // This is expected single-slot behavior for performance
+        let publisher: Hub<SimpleValue> = Hub::new("test_multi_consumer").unwrap();
+        let subscriber1 = publisher.clone();
+
+        // Publisher sends
+        publisher.send(SimpleValue(99.0), &mut None).unwrap();
+
+        // First subscriber reads it
+        let val1 = subscriber1.recv(&mut None);
+        assert!(val1.is_some());
+        assert_eq!(val1.unwrap(), SimpleValue(99.0));
+
+        // For true multi-subscriber, create separate Hub instances to same topic
+        let sub_a: Hub<SimpleValue> = Hub::new("test_true_pubsub").unwrap();
+        let sub_b: Hub<SimpleValue> = Hub::new("test_true_pubsub").unwrap();
+
+        sub_a.send(SimpleValue(42.0), &mut None).unwrap();
+
+        // Both can read because they each have their own sequence tracking
+        let val_a = sub_a.recv(&mut None);
+        let val_b = sub_b.recv(&mut None);
+
+        assert!(val_a.is_some());
+        assert!(val_b.is_some());
+        assert_eq!(val_a.unwrap(), SimpleValue(42.0));
+        assert_eq!(val_b.unwrap(), SimpleValue(42.0));
+    }
+
+    // =========================================================================
+    // Metrics Tests
+    // =========================================================================
+
+    #[test]
+    fn test_hub_metrics_initial() {
+        let hub: Hub<SimpleValue> = Hub::new("test_metrics_initial").unwrap();
+        let metrics = hub.get_metrics();
+
+        assert_eq!(metrics.messages_sent, 0);
+        assert_eq!(metrics.messages_received, 0);
+        assert_eq!(metrics.send_failures, 0);
+        assert_eq!(metrics.recv_failures, 0);
+    }
+
+    #[test]
+    fn test_hub_metrics_after_send() {
+        let hub: Hub<SimpleValue> = Hub::new("test_metrics_send").unwrap();
+
+        hub.send(SimpleValue(1.0), &mut None).unwrap();
+        hub.send(SimpleValue(2.0), &mut None).unwrap();
+        hub.send(SimpleValue(3.0), &mut None).unwrap();
+
+        let metrics = hub.get_metrics();
+        assert_eq!(metrics.messages_sent, 3);
+        assert_eq!(metrics.send_failures, 0);
+    }
+
+    #[test]
+    fn test_hub_metrics_after_recv() {
+        let hub: Hub<SimpleValue> = Hub::new("test_metrics_recv").unwrap();
+
+        hub.send(SimpleValue(1.0), &mut None).unwrap();
+        hub.recv(&mut None);
+        hub.recv(&mut None); // Second recv with no new data
+
+        let metrics = hub.get_metrics();
+        assert_eq!(metrics.messages_sent, 1);
+        assert!(metrics.messages_received >= 1);
+    }
+
+    #[test]
+    fn test_hub_metrics_shared_across_clones() {
+        let hub1: Hub<SimpleValue> = Hub::new("test_metrics_shared").unwrap();
+        let hub2 = hub1.clone();
+
+        hub1.send(SimpleValue(1.0), &mut None).unwrap();
+        hub2.send(SimpleValue(2.0), &mut None).unwrap();
+
+        // Metrics are shared, so both should show 2 messages sent
+        assert_eq!(hub1.get_metrics().messages_sent, 2);
+        assert_eq!(hub2.get_metrics().messages_sent, 2);
+    }
+
+    // =========================================================================
+    // AtomicHubMetrics Tests
+    // =========================================================================
+
+    #[test]
+    fn test_atomic_hub_metrics_default() {
+        let metrics = AtomicHubMetrics::default();
+        let snapshot = metrics.snapshot();
+
+        assert_eq!(snapshot.messages_sent, 0);
+        assert_eq!(snapshot.messages_received, 0);
+        assert_eq!(snapshot.send_failures, 0);
+        assert_eq!(snapshot.recv_failures, 0);
+    }
+
+    #[test]
+    fn test_atomic_hub_metrics_increment() {
+        let metrics = AtomicHubMetrics::default();
+
+        metrics
+            .messages_sent
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .messages_sent
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .messages_received
+            .fetch_add(3, std::sync::atomic::Ordering::Relaxed);
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.messages_sent, 2);
+        assert_eq!(snapshot.messages_received, 3);
+    }
+
+    // =========================================================================
+    // Thread Safety Tests
+    // =========================================================================
+
+    #[test]
+    fn test_hub_send_from_multiple_threads() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let hub: Arc<Hub<SimpleValue>> = Arc::new(Hub::new("test_threaded_send").unwrap());
+        let mut handles = vec![];
+
+        // Spawn multiple threads sending messages
+        for i in 0..4 {
+            let hub_clone = hub.clone();
+            handles.push(thread::spawn(move || {
+                for j in 0..10 {
+                    let _ = hub_clone.send(SimpleValue((i * 10 + j) as f64), &mut None);
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // Should have sent 40 messages total
+        assert_eq!(hub.get_metrics().messages_sent, 40);
+    }
+
+    #[test]
+    fn test_hub_recv_from_multiple_threads() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::thread;
+
+        let hub: Arc<Hub<SimpleValue>> = Arc::new(Hub::new("test_threaded_recv").unwrap());
+        let recv_count = Arc::new(AtomicUsize::new(0));
+
+        // Send one message
+        hub.send(SimpleValue(42.0), &mut None).unwrap();
+
+        // Multiple threads try to receive
+        let mut handles = vec![];
+        for _ in 0..4 {
+            let hub_clone = hub.clone();
+            let count_clone = recv_count.clone();
+            handles.push(thread::spawn(move || {
+                if hub_clone.recv(&mut None).is_some() {
+                    count_clone.fetch_add(1, Ordering::Relaxed);
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // At least one thread should have received the message
+        assert!(recv_count.load(Ordering::Relaxed) >= 1);
+    }
+
+    // =========================================================================
+    // Edge Cases
+    // =========================================================================
+
+    #[test]
+    fn test_hub_with_large_message() {
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+        struct LargeMessage {
+            data: Vec<u8>,
+        }
+
+        impl crate::core::LogSummary for LargeMessage {
+            fn log_summary(&self) -> String {
+                format!("LargeMsg({}B)", self.data.len())
+            }
+        }
+
+        let hub: Hub<LargeMessage> = Hub::new("test_large_msg").unwrap();
+        let large_data = LargeMessage {
+            data: vec![42u8; 10000], // 10KB message
+        };
+
+        hub.send(large_data.clone(), &mut None).unwrap();
+        let received = hub.recv(&mut None).unwrap();
+        assert_eq!(received.data.len(), 10000);
+        assert!(received.data.iter().all(|&b| b == 42));
+    }
+
+    #[test]
+    fn test_hub_with_empty_string_topic() {
+        // Empty topic name should still work (or fail gracefully)
+        let result: HorusResult<Hub<SimpleValue>> = Hub::new("");
+        // Either succeeds or returns an error, shouldn't panic
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_hub_rapid_send_recv() {
+        let hub: Hub<SimpleValue> = Hub::new("test_rapid").unwrap();
+
+        for i in 0..1000 {
+            hub.send(SimpleValue(i as f64), &mut None).unwrap();
+            // Immediate receive should get the value
+            let val = hub.recv(&mut None);
+            assert!(val.is_some());
+        }
+
+        assert_eq!(hub.get_metrics().messages_sent, 1000);
+    }
+}

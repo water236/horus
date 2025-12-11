@@ -2428,8 +2428,8 @@ pub fn driver_to_features(driver: &str, backend: Option<&str>) -> Vec<String> {
         "imu" => match backend.map(|s| s.to_lowercase()).as_deref() {
             Some("mpu6050") => vec!["mpu6050-imu".to_string()],
             Some("bno055") => vec!["bno055-imu".to_string()],
-            Some("icm20948") => vec![], // Not yet supported
-            _ => vec![],                // Simulation - no feature needed
+            Some("icm20948") => vec!["icm20948-imu".to_string()],
+            _ => vec![], // Simulation - no feature needed
         },
 
         // Camera drivers
@@ -4316,7 +4316,7 @@ fn find_horus_source_dir() -> Result<PathBuf> {
     // Check common development locations
     let candidates = vec![
         PathBuf::from("/horus"),
-        home_dir().join("horus/HORUS"),
+        home_dir().join("softmata/horus"),
         home_dir().join("horus"),
         PathBuf::from("/opt/horus"),
         PathBuf::from("/usr/local/horus"),

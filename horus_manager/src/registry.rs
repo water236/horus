@@ -1400,7 +1400,84 @@ impl RegistryClient {
             return Err(anyhow!("Failed to publish: {} - {}", status, error_text));
         }
 
+        // Parse the response to check verification status
+        let response_text = response.text().unwrap_or_default();
+        let response_json: serde_json::Value =
+            serde_json::from_str(&response_text).unwrap_or(serde_json::json!({}));
+
+        // Check if verification failed
+        if response_json.get("success") == Some(&serde_json::json!(false)) {
+            let error_type = response_json
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let message = response_json
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Package verification failed");
+
+            println!("\n{} Package verification failed!", "Error:".red());
+            println!("   {}", message);
+
+            if error_type == "verification_failed" {
+                println!("\n{}", "The package failed pre-upload verification.".yellow());
+                println!("{}", "Please fix the issues above and try again.".yellow());
+
+                // Show warnings if any
+                if let Some(warnings) = response_json.get("warnings").and_then(|v| v.as_array()) {
+                    if !warnings.is_empty() {
+                        println!("\n{}", "Warnings:".yellow());
+                        for warning in warnings {
+                            if let Some(w) = warning.as_str() {
+                                println!("   - {}", w);
+                            }
+                        }
+                    }
+                }
+            }
+
+            return Err(anyhow!("Package verification failed: {}", message));
+        }
+
         println!(" Published {} v{} successfully!", name, version);
+
+        // Show verification status if available
+        if let Some(verification) = response_json.get("verification") {
+            let status = verification
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let job_id = verification
+                .get("job_id")
+                .and_then(|v| v.as_str());
+
+            match status {
+                "pending" => {
+                    println!("\n{} Build verification in progress...", "".cyan());
+                    if let Some(id) = job_id {
+                        println!(
+                            "   Track status: horus pkg status {} v{} --verification",
+                            name, version
+                        );
+                        println!("   Job ID: {}", id);
+                    }
+                    println!(
+                        "\n{}",
+                        "Your package will be fully available once verification completes.".cyan()
+                    );
+                }
+                "passed" => {
+                    println!("\n{} Build verification passed!", "".green());
+                }
+                "failed" => {
+                    println!("\n{} Build verification failed!", "".red());
+                    if let Some(msg) = verification.get("message").and_then(|v| v.as_str()) {
+                        println!("   {}", msg);
+                    }
+                }
+                _ => {}
+            }
+        }
         let encoded_name = url_encode_package_name(&name);
         println!("   View at: {}/packages/{}", self.base_url, encoded_name);
 

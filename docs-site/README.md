@@ -89,7 +89,7 @@ This documentation site is part of the HORUS open-source project:
 
 - **License**: Apache-2.0
 - **Repository**: https://github.com/softmata/horus
-- **Framework**: `/HORUS` directory in the main repository
+- **Framework**: `/horus` directory in the main repository
 
 ## Contributing
 
