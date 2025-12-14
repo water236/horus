@@ -508,12 +508,14 @@ HORUS has **native Windows support** using `%TEMP%\horus\` for shared memory:
 git clone https://github.com/softmata/horus.git
 cd horus
 
-# 3. Build HORUS
-cargo build --release
+# 3. Run the install script (Git Bash or WSL recommended)
+./install.sh
 
-# 4. Install CLI
-cargo install --path horus_manager
+# 4. Verify installation
+horus --help
 ```
+
+> **Note**: On Windows, we recommend using Git Bash or WSL to run the install script. Alternatively, you can build manually with `cargo build --release` and copy the binary to your PATH.
 
 **Windows shared memory:**
 - Uses `%TEMP%\horus\` (typically `C:\Users\<user>\AppData\Local\Temp\horus\`)

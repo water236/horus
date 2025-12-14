@@ -686,7 +686,8 @@ jobs:
 
       - name: Install HORUS
         run: |
-          cargo install horus_manager
+          git clone https://github.com/softmata/horus.git /tmp/horus
+          cd /tmp/horus && ./install.sh
 
       - name: Publish Package
         env:
@@ -719,7 +720,8 @@ publish:
   stage: deploy
   image: rust:latest
   before_script:
-    - cargo install horus_manager
+    - git clone https://github.com/softmata/horus.git /tmp/horus
+    - cd /tmp/horus && ./install.sh
   script:
     - horus pkg publish --yes
   only:
@@ -743,7 +745,9 @@ Dockerfile:
 FROM rust:1.70
 
 # Install HORUS
-RUN cargo install horus_manager
+RUN git clone https://github.com/softmata/horus.git /tmp/horus \
+    && cd /tmp/horus && ./install.sh \
+    && rm -rf /tmp/horus
 
 # Copy project
 COPY . /app
@@ -775,9 +779,15 @@ pipeline {
     }
 
     stages {
+        stage('Setup') {
+            steps {
+                sh 'git clone https://github.com/softmata/horus.git /tmp/horus && cd /tmp/horus && ./install.sh'
+            }
+        }
+
         stage('Build') {
             steps {
-                sh 'cargo build --release'
+                sh 'horus build --release'
             }
         }
 
@@ -1466,7 +1476,7 @@ MIT
 **Always test before publishing:**
 ```bash
 # Run tests
-cargo test
+horus test
 
 # Run examples
 horus run examples/demo.rs --release

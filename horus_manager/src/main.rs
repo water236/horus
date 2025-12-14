@@ -902,8 +902,20 @@ enum NodeCommands {
         force: bool,
     },
 
-    /// Restart a node (kill and let scheduler restart)
+    /// Restart a node (re-initialize without killing scheduler)
     Restart {
+        /// Node name
+        name: String,
+    },
+
+    /// Pause a running node (temporarily stop ticking)
+    Pause {
+        /// Node name
+        name: String,
+    },
+
+    /// Resume a paused node
+    Resume {
         /// Node name
         name: String,
     },
@@ -2549,6 +2561,8 @@ except ImportError as e:
             NodeCommands::Info { name } => commands::node::node_info(&name),
             NodeCommands::Kill { name, force } => commands::node::kill_node(&name, force),
             NodeCommands::Restart { name } => commands::node::restart_node(&name),
+            NodeCommands::Pause { name } => commands::node::pause_node(&name),
+            NodeCommands::Resume { name } => commands::node::resume_node(&name),
         },
 
         Commands::Param { command } => match command {

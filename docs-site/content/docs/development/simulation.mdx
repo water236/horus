@@ -755,10 +755,10 @@ Simulation mode generates **realistic synthetic data**:
 **1. Develop with simulation first:**
 ```bash
 # Start with simulation
-cargo run --example my_robot  # Uses simulation by default
+horus run examples/my_robot.rs  # Uses simulation by default
 
 # Then test with hardware
-cargo run --example my_robot --features hardware
+horus run examples/my_robot.rs --enable hardware
 ```
 
 **2. Use feature flags for hardware:**
@@ -773,7 +773,7 @@ hardware = ["mpu6050", "rplidar", "gpio"]
 ```yaml
 # .github/workflows/test.yml
 - name: Run tests
-  run: cargo test  # No hardware needed
+  run: horus test  # No hardware needed
 ```
 
 **4. Gradual hardware transition:**

@@ -147,8 +147,7 @@ mod tests {
 ### Run the Tests
 
 ```bash
-cd temperature_sensor
-cargo test
+horus test
 ```
 
 **Expected Output:**
@@ -334,7 +333,7 @@ mod tests {
 ### Run Integration Tests
 
 ```bash
-cargo test test_pubsub_communication -- --test-threads=1
+horus test test_pubsub_communication -- --test-threads=1
 ```
 
 **Why `--test-threads=1`?**
@@ -615,7 +614,7 @@ mod tests {
 ### Run All Tests
 
 ```bash
-cargo test -- --test-threads=1
+horus test -- --test-threads=1
 ```
 
 **Output:**
@@ -673,7 +672,7 @@ sub_node.tick(None);
 Prevent shared memory conflicts:
 
 ```bash
-cargo test -- --test-threads=1
+horus test -- --test-threads=1
 ```
 
 ### 5. Test Edge Cases
@@ -692,25 +691,25 @@ fn test_invalid_data() {
 }
 ```
 
-## Running Tests with cargo test
+## Running Tests with horus test
 
 ### Basic Commands
 
 ```bash
 # Run all tests
-cargo test
+horus test
 
 # Run tests sequentially (recommended for HORUS)
-cargo test -- --test-threads=1
+horus test -- --test-threads=1
 
 # Run specific test
-cargo test test_sensor_initialization
+horus test test_sensor_initialization
 
 # Run tests with output
-cargo test -- --nocapture
+horus test -- --nocapture
 
 # Run tests matching pattern
-cargo test sensor
+horus test sensor
 ```
 
 ### Test Organization
@@ -744,7 +743,7 @@ mod tests {
 
 **Fix:**
 ```bash
-cargo test -- --test-threads=1
+horus test -- --test-threads=1
 ```
 
 ### Issue: "Topic not found" Errors

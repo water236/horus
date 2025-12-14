@@ -66,6 +66,17 @@ pub fn shm_params_dir() -> PathBuf {
     shm_base_dir().join("params")
 }
 
+/// Get the control directory for node lifecycle commands
+///
+/// Control files allow external processes (like `horus node kill`) to
+/// send commands to running nodes without killing the entire scheduler.
+///
+/// Structure: `/dev/shm/horus/control/{node_name}.cmd`
+/// Commands: "stop", "restart", "pause", "resume"
+pub fn shm_control_dir() -> PathBuf {
+    shm_base_dir().join("control")
+}
+
 /// Get the logs shared memory path
 pub fn shm_logs_path() -> PathBuf {
     // Logs are at the same level as horus dir, not inside it

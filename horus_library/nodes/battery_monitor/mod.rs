@@ -824,8 +824,8 @@ where
         next: P2,
     ) -> BatteryMonitorNodeBuilder<Pipeline<BatteryState, BatteryState, BatteryState, P, P2>>
     where
-        P2: Processor<BatteryState, Output = BatteryState>,
-        P: Processor<BatteryState, Output = BatteryState>,
+        P2: Processor<BatteryState, BatteryState>,
+        P: Processor<BatteryState, BatteryState>,
     {
         BatteryMonitorNodeBuilder {
             topic: self.topic,

@@ -34,6 +34,7 @@ sysfs_gpio = { version = "0.6", optional = true }  # Linux sysfs GPIO interface
 serialport = { version = "4.2", optional = true }
 socketcan = { version = "3.1", optional = true }
 i2cdev = { version = "0.6", optional = true }
+libc = { version = "0.2", optional = true }
 spidev = { version = "0.6", optional = true }
 gilrs = { version = "0.10", optional = true }  # Gamepad input
 crossterm = { version = "0.27", optional = true }  # Terminal/keyboard
@@ -89,7 +90,7 @@ raspberry-pi = ["rppal"]
 # Hardware interface features
 serial-hardware = ["serialport"]
 can-hardware = ["socketcan"]
-i2c-hardware = ["i2cdev"]
+i2c-hardware = ["i2cdev", "libc"]
 spi-hardware = ["spidev"]
 gpio-hardware = ["rppal", "sysfs_gpio"]
 modbus-hardware = ["tokio-modbus"]

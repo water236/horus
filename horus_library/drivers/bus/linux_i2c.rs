@@ -9,6 +9,9 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::io::AsRawFd;
 
+#[cfg(feature = "i2c-hardware")]
+extern crate libc;
+
 /// Linux I2C configuration
 #[derive(Debug, Clone)]
 pub struct LinuxI2cConfig {
@@ -33,6 +36,7 @@ pub struct LinuxI2cDriver {
 }
 
 // I2C ioctl constants
+#[cfg(feature = "i2c-hardware")]
 const I2C_SLAVE: libc::c_ulong = 0x0703;
 
 impl LinuxI2cDriver {

@@ -348,6 +348,16 @@ pub struct NodeMetrics {
     pub uptime_seconds: f64,
 }
 
+impl NodeMetrics {
+    /// Reset timing-related metrics for restart (preserves counts)
+    pub fn reset_timing(&mut self) {
+        self.avg_tick_duration_ms = 0.0;
+        self.max_tick_duration_ms = 0.0;
+        self.min_tick_duration_ms = 0.0;
+        self.last_tick_duration_ms = 0.0;
+    }
+}
+
 /// Configuration parameters for node behavior
 #[derive(Debug, Clone)]
 pub struct NodeConfig {
@@ -516,6 +526,18 @@ impl NodeInfo {
         // Cleanup logic can be added here
         self.set_state(NodeState::Stopped);
         Ok(())
+    }
+
+    /// Reset node context for restart (preserves identity, clears runtime state)
+    pub fn reset_for_restart(&mut self) {
+        self.restart_count += 1;
+        self.state = NodeState::Uninitialized;
+        self.previous_state = NodeState::Stopped;
+        self.state_change_time = Instant::now();
+        self.last_tick_time = None;
+        self.tick_start_time = None;
+        // Keep metrics history but reset tick timing
+        self.metrics.reset_timing();
     }
 
     pub fn restart(&mut self) -> crate::error::HorusResult<()> {

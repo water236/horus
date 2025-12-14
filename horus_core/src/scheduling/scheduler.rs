@@ -1,6 +1,6 @@
 use crate::core::{Node, NodeHeartbeat, NodeInfo};
 use crate::error::HorusResult;
-use crate::memory::platform::shm_heartbeats_dir;
+use crate::memory::platform::{shm_control_dir, shm_heartbeats_dir};
 use colored::Colorize;
 use std::collections::HashMap;
 use std::fs;
@@ -39,6 +39,15 @@ use super::jit::CompiledDataflow;
 use super::safety_monitor::SafetyMonitor;
 use tokio::sync::mpsc;
 
+/// Node control command for IPC-based lifecycle management
+#[derive(Debug, Clone, PartialEq)]
+pub enum NodeControlCommand {
+    Stop,    // Stop the node (won't tick anymore)
+    Restart, // Restart the node (re-initialize and resume)
+    Pause,   // Pause execution (can resume later)
+    Resume,  // Resume paused node
+}
+
 /// Enhanced node registration info with lifecycle tracking and per-node rate control
 struct RegisteredNode {
     node: Box<dyn Node>,
@@ -58,6 +67,9 @@ struct RegisteredNode {
     recorder: Option<NodeRecorder>, // Active recording (None if not recording)
     #[allow(dead_code)] // Stored for future replay-aware scheduling
     is_replay_node: bool, // True if this node is replaying recorded data
+    // Per-node lifecycle control (for horus node kill/restart)
+    is_stopped: bool, // Node has been stopped via control command
+    is_paused: bool,  // Node is temporarily paused
 }
 
 /// Performance metrics for a scheduler node
@@ -478,6 +490,8 @@ impl Scheduler {
             jit_stats: None,
             recorder: None,
             is_replay_node: true,
+            is_stopped: false,
+            is_paused: false,
         });
 
         // Sort nodes by priority
@@ -1388,6 +1402,8 @@ impl Scheduler {
             jit_stats: jit_compiled, // JIT-compiled dataflow (if available)
             recorder,                // Node recorder (if recording enabled)
             is_replay_node: false,   // Live node, not replay
+            is_stopped: false,       // Node starts running
+            is_paused: false,        // Node starts unpaused
         });
 
         println!(
@@ -1443,6 +1459,8 @@ impl Scheduler {
             jit_stats: None,
             recorder: None,
             is_replay_node: false,
+            is_stopped: false,
+            is_paused: false,
         });
 
         println!(
@@ -1610,6 +1628,9 @@ impl Scheduler {
             // Create heartbeat directory
             Self::setup_heartbeat_directory();
 
+            // Create control directory for per-node lifecycle commands
+            Self::setup_control_directory();
+
             // Write initial registry
             self.update_registry();
 
@@ -1645,6 +1666,9 @@ impl Scheduler {
                     );
                     break;
                 }
+
+                // Process per-node control commands (stop, restart, pause, resume)
+                self.process_control_commands();
 
                 let now = Instant::now();
                 self.last_instant = now;
@@ -1719,6 +1743,35 @@ impl Scheduler {
 
                     self.learning_complete = true;
                     println!("{}", "=== Optimization Complete ===\n".green());
+                }
+
+                // Re-initialize nodes that need restart (set by control commands)
+                for registered in self.nodes.iter_mut() {
+                    if !registered.is_stopped && !registered.is_paused && !registered.initialized {
+                        let node_name = registered.node.name();
+                        if let Some(ref mut ctx) = registered.context {
+                            match registered.node.init(ctx) {
+                                Ok(()) => {
+                                    registered.initialized = true;
+                                    println!(
+                                        "{}",
+                                        format!("[CONTROL] Node '{}' re-initialized", node_name)
+                                            .green()
+                                    );
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "[CONTROL] Failed to re-initialize node '{}': {}",
+                                        node_name, e
+                                    );
+                                    ctx.transition_to_error(format!(
+                                        "Re-initialization failed: {}",
+                                        e
+                                    ));
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // Execute nodes based on learning phase
@@ -2195,6 +2248,130 @@ impl Scheduler {
         }
     }
 
+    /// Setup control directory for node lifecycle commands
+    fn setup_control_directory() {
+        let dir = shm_control_dir();
+        let _ = fs::create_dir_all(&dir);
+    }
+
+    /// Clean up control directory
+    pub fn cleanup_control_dir() {
+        let dir = shm_control_dir();
+        if dir.exists() {
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// Check and process control commands for all nodes
+    ///
+    /// Reads control files from `/dev/shm/horus/control/{node_name}.cmd`
+    /// and processes commands like stop, restart, pause, resume.
+    fn process_control_commands(&mut self) {
+        let control_dir = shm_control_dir();
+        if !control_dir.exists() {
+            return;
+        }
+
+        // Check for control files
+        if let Ok(entries) = fs::read_dir(&control_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().map_or(false, |ext| ext == "cmd") {
+                    // Extract node name from filename (e.g., "my_node.cmd" -> "my_node")
+                    if let Some(stem) = path.file_stem() {
+                        let node_name = stem.to_string_lossy().to_string();
+
+                        // Read command
+                        if let Ok(cmd_str) = fs::read_to_string(&path) {
+                            let cmd = cmd_str.trim().to_lowercase();
+
+                            // Find and process the node
+                            let mut found = false;
+                            for registered in &mut self.nodes {
+                                if registered.node.name() == node_name
+                                    || registered.node.name().contains(&node_name)
+                                {
+                                    found = true;
+                                    match cmd.as_str() {
+                                        "stop" => {
+                                            registered.is_stopped = true;
+                                            registered.is_paused = false;
+                                            println!(
+                                                "{}",
+                                                format!("[CONTROL] Node '{}' stopped", node_name)
+                                                    .yellow()
+                                            );
+                                            // Update heartbeat to show stopped state
+                                            if let Some(ref mut ctx) = registered.context {
+                                                ctx.transition_to_error(
+                                                    "Stopped via control command".to_string(),
+                                                );
+                                            }
+                                        }
+                                        "restart" => {
+                                            registered.is_stopped = false;
+                                            registered.is_paused = false;
+                                            registered.initialized = false;
+                                            println!(
+                                                "{}",
+                                                format!(
+                                                    "[CONTROL] Node '{}' restarting",
+                                                    node_name
+                                                )
+                                                .cyan()
+                                            );
+                                            // Reset context for re-initialization
+                                            if let Some(ref mut ctx) = registered.context {
+                                                ctx.reset_for_restart();
+                                            }
+                                        }
+                                        "pause" => {
+                                            registered.is_paused = true;
+                                            println!(
+                                                "{}",
+                                                format!("[CONTROL] Node '{}' paused", node_name)
+                                                    .yellow()
+                                            );
+                                        }
+                                        "resume" => {
+                                            registered.is_paused = false;
+                                            println!(
+                                                "{}",
+                                                format!("[CONTROL] Node '{}' resumed", node_name)
+                                                    .green()
+                                            );
+                                        }
+                                        _ => {
+                                            eprintln!(
+                                                "{}",
+                                                format!(
+                                                    "[CONTROL] Unknown command '{}' for node '{}'",
+                                                    cmd, node_name
+                                                )
+                                                .red()
+                                            );
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+
+                            if !found {
+                                eprintln!(
+                                    "{}",
+                                    format!("[CONTROL] Node '{}' not found", node_name).red()
+                                );
+                            }
+                        }
+
+                        // Remove processed control file
+                        let _ = fs::remove_file(&path);
+                    }
+                }
+            }
+        }
+    }
+
     /// Clean up session directory (no-op with flat namespace)
     ///
     /// With the simplified flat namespace model, topics are shared globally
@@ -2336,6 +2513,11 @@ impl Scheduler {
         // We need to process nodes one at a time to avoid borrow checker issues
         let num_nodes = self.nodes.len();
         for i in 0..num_nodes {
+            // Skip stopped or paused nodes (per-node lifecycle control)
+            if self.nodes[i].is_stopped || self.nodes[i].is_paused {
+                continue;
+            }
+
             let (should_run, node_name, should_tick) = {
                 let registered = &self.nodes[i];
                 let node_name = registered.node.name();
@@ -2545,6 +2727,11 @@ impl Scheduler {
             for node_name in level {
                 for (idx, registered) in self.nodes.iter().enumerate() {
                     if registered.node.name() == node_name {
+                        // Skip stopped or paused nodes (per-node lifecycle control)
+                        if registered.is_stopped || registered.is_paused {
+                            break;
+                        }
+
                         let should_run =
                             node_filter.is_none_or(|filter| filter.contains(&node_name.as_str()));
 

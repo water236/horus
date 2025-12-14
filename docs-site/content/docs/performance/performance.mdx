@@ -365,7 +365,7 @@ io_uring eliminates syscalls on the send path using kernel-side polling:
 
 ```bash
 # Build with io_uring support
-cargo build --release --features io-uring-net
+horus build --release --enable io-uring-net
 ```
 
 **Requirements:**
@@ -378,7 +378,7 @@ Batch UDP uses `sendmmsg`/`recvmmsg` syscalls for efficient batched network I/O:
 
 ```bash
 # Batch UDP is automatically enabled on Linux - no extra dependencies needed
-cargo build --release
+horus build --release
 ```
 
 **Requirements:**
@@ -388,7 +388,7 @@ cargo build --release
 
 ```bash
 # Build with all ultra-low-latency features (io_uring)
-cargo build --release --features ultra-low-latency
+horus build --release --enable ultra-low-latency
 ```
 
 ### Smart Transport Selection

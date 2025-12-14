@@ -9,7 +9,7 @@ Sim3D is included with the HORUS framework. This guide covers installation and i
 
 ## Prerequisites
 
-- HORUS framework installed (`cargo install horus`)
+- HORUS framework installed (see [Installation Guide](/getting-started/installation))
 - Rust 1.70+ (for building from source)
 - OpenGL 3.3+ or Vulkan (for rendering)
 
@@ -26,8 +26,10 @@ Sim3D is included with the HORUS framework. This guide covers installation and i
 Sim3D is bundled with the HORUS CLI:
 
 ```bash
-# Install HORUS (includes sim3d)
-cargo install horus
+# Clone and install HORUS (includes sim3d)
+git clone https://github.com/softmata/horus.git
+cd horus
+./install.sh
 
 # Verify installation
 horus sim3d --help
@@ -38,12 +40,17 @@ horus sim3d --help
 ```bash
 # Clone HORUS repository
 git clone https://github.com/softmata/horus.git
-cd softmata/horus
+cd horus
 
-# Build sim3d with default features
-cargo build -p sim3d --release
+# Build and run sim3d (recommended)
+horus sim3d
 
-# Build with all features
+# Or with specific features
+horus sim3d --enable cuda,python,editor
+```
+
+**For cargo projects** (advanced users working on sim3d itself):
+```bash
 cargo build -p sim3d --release --features "python,cuda,editor"
 ```
 
@@ -91,8 +98,8 @@ After installation, sim3d uses these directories:
 # Check CUDA availability
 nvidia-smi
 
-# Build with CUDA support
-cargo build -p sim3d --release --features cuda
+# Run sim3d with CUDA support
+horus sim3d --enable cuda
 ```
 
 ### Vulkan
