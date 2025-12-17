@@ -181,15 +181,165 @@ fn run_validate_command(
     }
 }
 
+/// Resource for automated screenshot capture
+#[derive(Resource)]
+struct AutoScreenshot {
+    output_path: std::path::PathBuf,
+    frames_to_wait: u32,
+    current_frame: u32,
+    captured: bool,
+}
+
+/// Resource to track when we should exit (after screenshot is captured)
+#[derive(Resource, Default)]
+struct ScreenshotExitTimer {
+    frames_until_exit: Option<u32>,
+}
+
+/// Resource to track screenshot camera settings
+#[derive(Resource)]
+struct ScreenshotCameraConfig {
+    positioned: bool,
+    angle: String,
+    distance_multiplier: f32,
+    world_view: bool,
+}
+
+impl Default for ScreenshotCameraConfig {
+    fn default() -> Self {
+        Self {
+            positioned: false,
+            angle: "isometric".to_string(),
+            distance_multiplier: 1.0,
+            world_view: false,
+        }
+    }
+}
+
+/// System to reposition camera for screenshot verification
+/// Supports multiple angles: front, back, left, right, top, isometric
+/// Can focus on robot close-up or world overview
+fn screenshot_camera_setup_system(
+    mut config: ResMut<ScreenshotCameraConfig>,
+    mut camera_query: Query<&mut Transform, With<Camera3d>>,
+    robot_query: Query<&Transform, (With<physics::diff_drive::DifferentialDrive>, Without<Camera3d>)>,
+) {
+    if config.positioned {
+        return;
+    }
+
+    // Find the robot position
+    let robot_pos = if let Ok(robot_transform) = robot_query.get_single() {
+        robot_transform.translation
+    } else {
+        // Default robot position if not found yet
+        Vec3::new(0.0, 0.1, 0.0)
+    };
+
+    if let Ok(mut camera_transform) = camera_query.get_single_mut() {
+        let (camera_offset, look_target) = if config.world_view {
+            // World overview - higher and further back to see entire scene
+            let dist = 8.0 * config.distance_multiplier;
+            (
+                Vec3::new(dist * 0.5, dist * 0.6, dist * 0.5),
+                Vec3::new(0.0, 0.0, 0.0), // Look at world center
+            )
+        } else {
+            // Robot close-up with various angles
+            let base_dist = 0.8 * config.distance_multiplier;
+            let height = 0.4 * config.distance_multiplier;
+
+            let offset = match config.angle.as_str() {
+                "front" => Vec3::new(0.0, height, base_dist),      // Front view (Z+)
+                "back" => Vec3::new(0.0, height, -base_dist),     // Back view (Z-)
+                "left" => Vec3::new(-base_dist, height, 0.0),     // Left view (X-)
+                "right" => Vec3::new(base_dist, height, 0.0),     // Right view (X+)
+                "top" => Vec3::new(0.0, base_dist * 1.5, 0.1),    // Top-down view
+                "isometric" | _ => Vec3::new(                      // 3/4 isometric view
+                    base_dist * 0.7,
+                    height,
+                    base_dist * 0.7,
+                ),
+            };
+            (offset, robot_pos + Vec3::new(0.0, 0.05, 0.0))
+        };
+
+        camera_transform.translation = robot_pos + camera_offset;
+        camera_transform.look_at(look_target, Vec3::Y);
+
+        info!(
+            "Screenshot camera: angle={}, world_view={}, position={:?}, target={:?}",
+            config.angle, config.world_view, camera_transform.translation, look_target
+        );
+        config.positioned = true;
+    }
+}
+
+/// System to capture screenshot after N frames using Bevy 0.15 observer pattern
+fn auto_screenshot_system(
+    mut commands: Commands,
+    mut screenshot: ResMut<AutoScreenshot>,
+) {
+    if screenshot.captured {
+        return;
+    }
+
+    screenshot.current_frame += 1;
+
+    if screenshot.current_frame >= screenshot.frames_to_wait {
+        let path = screenshot.output_path.clone();
+        info!("Capturing screenshot to: {:?}", path);
+
+        // Use Bevy 0.15's observer-based screenshot API
+        use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+        commands.spawn(Screenshot::primary_window())
+            .observe(save_to_disk(path.clone()));
+
+        screenshot.captured = true;
+        info!("Screenshot capture initiated");
+    }
+}
+
+/// System to exit after screenshot is saved
+fn screenshot_exit_system(
+    mut exit_timer: ResMut<ScreenshotExitTimer>,
+    screenshot: Res<AutoScreenshot>,
+    mut exit: EventWriter<bevy::app::AppExit>,
+) {
+    if screenshot.captured {
+        // Start or decrement exit timer
+        match exit_timer.frames_until_exit {
+            None => {
+                // Give 10 frames for screenshot to be written
+                exit_timer.frames_until_exit = Some(10);
+            }
+            Some(0) => {
+                info!("Screenshot saved, exiting...");
+                exit.send(bevy::app::AppExit::Success);
+            }
+            Some(ref mut frames) => {
+                *frames -= 1;
+            }
+        }
+    }
+}
+
 fn run_visual_mode(cli: Cli) {
+    let screenshot_mode = cli.screenshot.is_some();
+    let screenshot_path = cli.screenshot.clone();
+    let screenshot_frames = cli.screenshot_frames;
+
     let mut app = App::new();
+
+    // Adjust window size for screenshot mode
+    let (width, height) = if screenshot_mode { (1280.0, 720.0) } else { (1920.0, 1080.0) };
 
     app.add_plugins(
         DefaultPlugins
             .set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "sim3d - HORUS 3D Simulator".into(),
-                    resolution: (1920.0, 1080.0).into(),
+                    resolution: (width, height).into(),
                     ..default()
                 }),
                 ..default()
@@ -198,16 +348,43 @@ fn run_visual_mode(cli: Cli) {
             .disable::<bevy::log::LogPlugin>(), // Disable since we init tracing manually
     );
 
-    #[cfg(feature = "visual")]
-    {
-        use bevy_egui::EguiPlugin;
-        app.add_plugins(EguiPlugin);
+    // Add screenshot automation if --screenshot was specified
+    if let Some(path) = screenshot_path {
+        app.insert_resource(AutoScreenshot {
+            output_path: path,
+            frames_to_wait: screenshot_frames,
+            current_frame: 0,
+            captured: false,
+        });
+        app.init_resource::<ScreenshotExitTimer>();
+        app.insert_resource(ScreenshotCameraConfig {
+            positioned: false,
+            angle: cli.screenshot_angle.clone(),
+            distance_multiplier: cli.screenshot_distance,
+            world_view: cli.screenshot_world,
+        });
+        // Camera setup runs first, then screenshot capture, then exit check
+        app.add_systems(Update, (
+            screenshot_camera_setup_system,
+            auto_screenshot_system,
+            screenshot_exit_system,
+        ).chain());
+        info!("Screenshot mode: will capture after {} frames", screenshot_frames);
     }
 
-    #[cfg(feature = "editor")]
-    {
-        use bevy_editor_pls::EditorPlugin;
-        app.add_plugins(EditorPlugin::default());
+    // Only add UI plugins if not in screenshot mode
+    if !screenshot_mode {
+        #[cfg(feature = "visual")]
+        {
+            use bevy_egui::EguiPlugin;
+            app.add_plugins(EguiPlugin);
+        }
+
+        #[cfg(feature = "editor")]
+        {
+            use bevy_editor_pls::EditorPlugin;
+            app.add_plugins(EditorPlugin::default());
+        }
     }
 
     // Add sensor update plugin
@@ -250,10 +427,12 @@ fn run_visual_mode(cli: Cli) {
     app.add_plugins(IMUPlugin);
     app.add_plugins(TactileSensorPlugin);
 
-    // View mode plugins (debug visualization)
-    app.add_plugins(CollisionVisualizationPlugin);
-    app.add_plugins(PhysicsVisualizationPlugin);
-    app.add_plugins(HFrameVisualizationPlugin);
+    // View mode plugins (debug visualization) - skip in screenshot mode
+    if !screenshot_mode {
+        app.add_plugins(CollisionVisualizationPlugin);
+        app.add_plugins(PhysicsVisualizationPlugin);
+        app.add_plugins(HFrameVisualizationPlugin);
+    }
 
     // Utility plugins
     app.add_plugins(ProceduralGenerationPlugin);
@@ -304,8 +483,8 @@ fn run_visual_mode(cli: Cli) {
     );
 
     #[cfg(feature = "visual")]
-    {
-        // UI plugins
+    if !screenshot_mode {
+        // UI plugins (skip in screenshot mode for cleaner output)
         app.add_plugins(ui::layouts::LayoutPlugin);
         app.add_plugins(ui::keybindings::KeyBindingsPlugin::default());
         app.add_plugins(ui::view_modes::ViewModePlugin);

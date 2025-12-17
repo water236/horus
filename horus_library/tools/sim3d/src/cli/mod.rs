@@ -51,6 +51,27 @@ pub struct Cli {
     /// Robot name for HORUS topics (default: sim3d_robot)
     #[arg(long, default_value = "sim3d_robot")]
     pub robot_name: String,
+
+    /// Capture a screenshot and exit (internal - for automated testing via horus_mcp)
+    #[arg(long, hide = true)]
+    pub screenshot: Option<PathBuf>,
+
+    /// Frames to wait before capturing screenshot (default: 30)
+    #[arg(long, hide = true, default_value_t = 30)]
+    pub screenshot_frames: u32,
+
+    /// Camera angle for screenshot (internal - for multi-angle verification)
+    /// Options: front, back, left, right, top, isometric (default: isometric)
+    #[arg(long, hide = true, default_value = "isometric")]
+    pub screenshot_angle: String,
+
+    /// Camera distance multiplier for screenshot (internal - default: 1.0)
+    #[arg(long, hide = true, default_value_t = 1.0)]
+    pub screenshot_distance: f32,
+
+    /// Focus on world overview instead of robot close-up (internal)
+    #[arg(long, hide = true, default_value_t = false)]
+    pub screenshot_world: bool,
 }
 
 /// Subcommands for sim3d
