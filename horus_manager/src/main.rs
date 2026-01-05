@@ -472,29 +472,6 @@ enum Commands {
         list: bool,
     },
 
-    /// Convert ROS package (ROS1 or ROS2) to HORUS project
-    #[command(name = "from-ros", alias = "from-ros2")]
-    FromRos {
-        /// Path to ROS package directory (containing package.xml)
-        source: PathBuf,
-
-        /// Output directory for HORUS project (default: <source>_horus)
-        #[arg(short = 'o', long = "output")]
-        output: Option<PathBuf>,
-
-        /// Generate node skeletons from source files
-        #[arg(long = "nodes")]
-        generate_nodes: bool,
-
-        /// Show detailed output
-        #[arg(short = 'v', long = "verbose")]
-        verbose: bool,
-
-        /// Preview conversion without creating files
-        #[arg(short = 'n', long = "dry-run")]
-        dry_run: bool,
-    },
-
     /// Add a package, driver, or plugin (smart auto-detection)
     Add {
         /// Package/driver/plugin name to add
@@ -4424,14 +4401,6 @@ except ImportError as e:
                 ))
             }
         }
-
-        Commands::FromRos {
-            source,
-            output,
-            generate_nodes,
-            verbose,
-            dry_run,
-        } => commands::from_ros::run(&source, output.as_deref(), generate_nodes, verbose, dry_run),
 
         Commands::Drivers { command } => {
             // Driver alias resolver (local implementation)

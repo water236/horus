@@ -708,26 +708,42 @@ section "15. Feature Matrix Testing"
 if [ "$QUICK_MODE" = true ]; then
     skip "Feature matrix (quick mode)"
 else
-    # Test important feature combinations
-    declare -A FEATURE_TESTS
-    FEATURE_TESTS["default"]=""
-    FEATURE_TESTS["ml-inference"]="--features ml-inference"
-    FEATURE_TESTS["tls"]="--features tls"
-    FEATURE_TESTS["quic"]="--features quic"
-    FEATURE_TESTS["onnx"]="--features onnx"
-    FEATURE_TESTS["standard-nodes"]="--features standard-nodes"
+    # Test important feature combinations for horus_library
+    declare -A LIBRARY_FEATURES
+    LIBRARY_FEATURES["default"]=""
+    LIBRARY_FEATURES["ml-inference"]="--features ml-inference"
+    LIBRARY_FEATURES["onnx"]="--features onnx"
+    LIBRARY_FEATURES["standard-nodes"]="--features standard-nodes"
+
+    # Test network features on horus_core (where they're defined)
+    declare -A CORE_FEATURES
+    CORE_FEATURES["tls"]="--features tls"
+    CORE_FEATURES["quic"]="--features quic"
 
     FEATURE_PASS=0
     FEATURE_TOTAL=0
 
-    for feature_name in "${!FEATURE_TESTS[@]}"; do
-        FEATURE_FLAGS="${FEATURE_TESTS[$feature_name]}"
+    # Test horus_library features
+    for feature_name in "${!LIBRARY_FEATURES[@]}"; do
+        FEATURE_FLAGS="${LIBRARY_FEATURES[$feature_name]}"
         FEATURE_TOTAL=$((FEATURE_TOTAL + 1))
 
         if cargo check -p horus_library $FEATURE_FLAGS 2>/dev/null; then
             FEATURE_PASS=$((FEATURE_PASS + 1))
         else
-            warn "Feature '$feature_name' check failed"
+            warn "Feature '$feature_name' (horus_library) check failed"
+        fi
+    done
+
+    # Test horus_core features (network transport)
+    for feature_name in "${!CORE_FEATURES[@]}"; do
+        FEATURE_FLAGS="${CORE_FEATURES[$feature_name]}"
+        FEATURE_TOTAL=$((FEATURE_TOTAL + 1))
+
+        if cargo check -p horus_core $FEATURE_FLAGS 2>/dev/null; then
+            FEATURE_PASS=$((FEATURE_PASS + 1))
+        else
+            warn "Feature '$feature_name' (horus_core) check failed"
         fi
     done
 

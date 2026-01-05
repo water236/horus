@@ -69,6 +69,11 @@ path = "src/bin/test_critical_production.rs"
 doc = false
 
 [[bin]]
+name = "comparison_runner"
+path = "src/bin/comparison_runner.rs"
+doc = false
+
+[[bin]]
 name = "pod_benchmark"
 path = "src/bin/pod_benchmark.rs"
 doc = true

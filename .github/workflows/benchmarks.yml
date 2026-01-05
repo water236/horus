@@ -32,7 +32,8 @@ jobs:
         sudo apt-get install -y \
           linux-tools-common \
           linux-tools-generic \
-          gnuplot
+          gnuplot \
+          libudev-dev
 
     - name: Configure CPU for benchmarks
       run: |
@@ -107,7 +108,7 @@ jobs:
 
   benchmark-compare:
     name: Compare with ROS2
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
 
     steps:

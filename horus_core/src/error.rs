@@ -88,6 +88,10 @@ pub enum HorusError {
     #[error("Feature not available: {0}")]
     FeatureNotAvailable(String),
 
+    /// Operation not supported on this platform
+    #[error("Unsupported: {0}")]
+    Unsupported(String),
+
     /// Generic internal errors (use sparingly)
     #[error("Internal error: {0}")]
     Internal(String),
@@ -274,5 +278,15 @@ impl HorusError {
     /// Check if this is a permission error
     pub fn is_permission_denied(&self) -> bool {
         matches!(self, HorusError::PermissionDenied(_))
+    }
+
+    /// Create an unsupported operation error
+    pub fn unsupported<S: Into<String>>(msg: S) -> Self {
+        HorusError::Unsupported(msg.into())
+    }
+
+    /// Check if this is an unsupported operation error
+    pub fn is_unsupported(&self) -> bool {
+        matches!(self, HorusError::Unsupported(_))
     }
 }

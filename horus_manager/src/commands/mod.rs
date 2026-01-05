@@ -2,7 +2,6 @@ pub mod bridge;
 pub mod clean;
 pub mod deploy;
 pub mod doctor;
-pub mod from_ros;
 pub mod github_auth;
 pub mod hardware;
 pub mod hf;
