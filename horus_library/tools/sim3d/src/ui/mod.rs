@@ -4,11 +4,17 @@ pub mod debug_panel;
 #[cfg(feature = "visual")]
 pub mod dock;
 pub mod file_dialog;
+#[cfg(feature = "visual")]
+pub mod floating_panels;
 pub mod hframe_panel;
 pub mod horus_panel;
 pub mod keybindings;
 pub mod layouts;
 pub mod notifications;
+#[cfg(feature = "visual")]
+pub mod panel_manager;
+#[cfg(feature = "visual")]
+pub mod panel_state;
 pub mod physics_panel;
 pub mod plugin_panel;
 pub mod recent_files;

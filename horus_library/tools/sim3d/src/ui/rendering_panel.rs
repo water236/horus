@@ -288,7 +288,7 @@ pub fn render_rendering_panel_ui(
     settings: &mut RenderingSettings,
     config: &mut RenderingPanelConfig,
 ) {
-    ui.heading("🎨 Rendering");
+    ui.heading("Rendering");
     ui.separator();
 
     // Preset selector
@@ -317,7 +317,7 @@ pub fn render_rendering_panel_ui(
     ui.separator();
 
     // Bloom
-    ui.collapsing("✨ Bloom", |ui| {
+    ui.collapsing("Bloom", |ui| {
         if ui
             .checkbox(&mut settings.bloom_enabled, "Enabled")
             .changed()
@@ -350,7 +350,7 @@ pub fn render_rendering_panel_ui(
     });
 
     // HDR & Tonemapping
-    ui.collapsing("☀ HDR & Tonemapping", |ui| {
+    ui.collapsing("HDR & Tonemapping", |ui| {
         if ui.checkbox(&mut settings.hdr_enabled, "HDR").changed() {
             settings.dirty = true;
         }
@@ -382,7 +382,7 @@ pub fn render_rendering_panel_ui(
     });
 
     // Shadows
-    ui.collapsing("🌑 Shadows", |ui| {
+    ui.collapsing("Shadows", |ui| {
         ui.horizontal(|ui| {
             ui.label("Quality:");
             egui::ComboBox::from_id_salt("shadow_quality")
@@ -418,7 +418,7 @@ pub fn render_rendering_panel_ui(
     });
 
     // Ambient Occlusion
-    ui.collapsing("🌫 Ambient Occlusion", |ui| {
+    ui.collapsing("Ambient Occlusion", |ui| {
         if ui.checkbox(&mut settings.ao_enabled, "Enabled").changed() {
             settings.dirty = true;
             settings.preset = RenderingPreset::Custom;
@@ -446,7 +446,7 @@ pub fn render_rendering_panel_ui(
     });
 
     // Anti-aliasing
-    ui.collapsing("🔲 Anti-Aliasing", |ui| {
+    ui.collapsing("Anti-Aliasing", |ui| {
         ui.horizontal(|ui| {
             ui.label("Mode:");
             egui::ComboBox::from_id_salt("aa_mode")
@@ -468,7 +468,7 @@ pub fn render_rendering_panel_ui(
 
     // Advanced: Fog and post-processing
     if config.show_advanced {
-        ui.collapsing("🌁 Fog", |ui| {
+        ui.collapsing("Fog", |ui| {
             if ui.checkbox(&mut settings.fog_enabled, "Enabled").changed() {
                 settings.dirty = true;
             }
@@ -500,7 +500,7 @@ pub fn render_rendering_panel_ui(
             }
         });
 
-        ui.collapsing("🎬 Post-Processing", |ui| {
+        ui.collapsing("Post-Processing", |ui| {
             // Vignette
             ui.horizontal(|ui| {
                 if ui
@@ -575,7 +575,7 @@ pub fn render_rendering_panel_ui(
     // Apply indicator
     if settings.dirty {
         ui.separator();
-        ui.colored_label(egui::Color32::YELLOW, "⚠ Settings modified");
+        ui.colored_label(egui::Color32::YELLOW, "[!] Settings modified");
         if ui.button("Apply Changes").clicked() {
             settings.dirty = false;
         }

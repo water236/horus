@@ -20,10 +20,10 @@ pub enum RecordingState {
 impl RecordingState {
     pub fn icon(&self) -> &'static str {
         match self {
-            RecordingState::Idle => "⏹",
-            RecordingState::Recording => "🔴",
-            RecordingState::Paused => "⏸",
-            RecordingState::Playing => "▶",
+            RecordingState::Idle => "[STOP]",
+            RecordingState::Recording => "[REC]",
+            RecordingState::Paused => "[PAUSE]",
+            RecordingState::Playing => "[PLAY]",
         }
     }
 
@@ -208,7 +208,7 @@ pub fn render_recording_panel_ui(
 ) -> Vec<RecordingEvent> {
     let mut events = Vec::new();
 
-    ui.heading("🎬 Recording");
+    ui.heading("Recording");
     ui.separator();
 
     // Status display
@@ -230,7 +230,7 @@ pub fn render_recording_panel_ui(
     ui.horizontal(|ui| {
         match settings.state {
             RecordingState::Idle => {
-                if ui.button("🔴 Record").clicked() {
+                if ui.button("[REC] Record").clicked() {
                     events.push(RecordingEvent::StartRecording);
                     settings.state = RecordingState::Recording;
                     settings.frames_recorded = 0;
@@ -239,34 +239,34 @@ pub fn render_recording_panel_ui(
                 }
             }
             RecordingState::Recording => {
-                if ui.button("⏸ Pause").clicked() {
+                if ui.button("[||] Pause").clicked() {
                     events.push(RecordingEvent::PauseRecording);
                     settings.state = RecordingState::Paused;
                 }
-                if ui.button("⏹ Stop").clicked() {
+                if ui.button("[X] Stop").clicked() {
                     events.push(RecordingEvent::StopRecording);
                     settings.state = RecordingState::Idle;
                 }
             }
             RecordingState::Paused => {
-                if ui.button("▶ Resume").clicked() {
+                if ui.button("[>] Resume").clicked() {
                     events.push(RecordingEvent::ResumeRecording);
                     settings.state = RecordingState::Recording;
                 }
-                if ui.button("⏹ Stop").clicked() {
+                if ui.button("[X] Stop").clicked() {
                     events.push(RecordingEvent::StopRecording);
                     settings.state = RecordingState::Idle;
                 }
             }
             RecordingState::Playing => {
-                if ui.button("⏹ Stop").clicked() {
+                if ui.button("[X] Stop").clicked() {
                     events.push(RecordingEvent::StopPlayback);
                     settings.state = RecordingState::Idle;
                 }
             }
         }
 
-        if ui.button("📷 Screenshot").clicked() {
+        if ui.button("[CAM] Screenshot").clicked() {
             events.push(RecordingEvent::TakeScreenshot);
         }
     });
@@ -285,7 +285,7 @@ pub fn render_recording_panel_ui(
     ui.separator();
 
     // Video settings
-    ui.collapsing("🎥 Video", |ui| {
+    ui.collapsing("Video", |ui| {
         ui.checkbox(&mut settings.video_enabled, "Enable video recording");
 
         if settings.video_enabled {
@@ -332,7 +332,7 @@ pub fn render_recording_panel_ui(
     });
 
     // Trajectory settings
-    ui.collapsing("📈 Trajectory", |ui| {
+    ui.collapsing("Trajectory", |ui| {
         ui.checkbox(
             &mut settings.trajectory_enabled,
             "Enable trajectory recording",
@@ -355,7 +355,7 @@ pub fn render_recording_panel_ui(
     });
 
     // Sensor data settings
-    ui.collapsing("📡 Sensor Data", |ui| {
+    ui.collapsing("Sensor Data", |ui| {
         ui.checkbox(&mut settings.sensor_data_enabled, "Enable sensor recording");
 
         if settings.sensor_data_enabled {
@@ -389,7 +389,7 @@ pub fn render_recording_panel_ui(
 
     // Output settings
     if config.show_advanced {
-        ui.collapsing("📁 Output", |ui| {
+        ui.collapsing("Output", |ui| {
             ui.horizontal(|ui| {
                 ui.label("Directory:");
                 let dir_str = settings.output_directory.to_string_lossy().to_string();
@@ -409,7 +409,7 @@ pub fn render_recording_panel_ui(
 
         // Playback settings
         if config.show_playback {
-            ui.collapsing("▶ Playback", |ui| {
+            ui.collapsing("Playback", |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Speed:");
                     ui.add(egui::Slider::new(&mut settings.playback_speed, 0.1..=4.0).suffix("x"));

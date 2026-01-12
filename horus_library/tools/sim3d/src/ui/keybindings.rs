@@ -398,6 +398,17 @@ pub enum KeyBindingAction {
     ToggleConsole,
     ToggleFullscreen,
     ToggleDebugPanel,
+    // Panel management
+    ToggleControls,
+    TogglePhysicsPanel,
+    ToggleSensors,
+    ToggleRendering,
+    ToggleRecording,
+    ToggleHorusPanel,
+    ToggleHFramePanel,
+    ToggleViewModes,
+    DockAllPanels,
+    DetachAllPanels,
 
     // Simulation actions
     SimulationPlay,
@@ -474,7 +485,18 @@ impl KeyBindingAction {
             | KeyBindingAction::ToggleHierarchy
             | KeyBindingAction::ToggleConsole
             | KeyBindingAction::ToggleFullscreen
-            | KeyBindingAction::ToggleDebugPanel => KeyBindingCategory::View,
+            | KeyBindingAction::ToggleDebugPanel
+            // Panel management
+            | KeyBindingAction::ToggleControls
+            | KeyBindingAction::TogglePhysicsPanel
+            | KeyBindingAction::ToggleSensors
+            | KeyBindingAction::ToggleRendering
+            | KeyBindingAction::ToggleRecording
+            | KeyBindingAction::ToggleHorusPanel
+            | KeyBindingAction::ToggleHFramePanel
+            | KeyBindingAction::ToggleViewModes
+            | KeyBindingAction::DockAllPanels
+            | KeyBindingAction::DetachAllPanels => KeyBindingCategory::View,
 
             // Simulation
             KeyBindingAction::SimulationPlay
@@ -552,6 +574,17 @@ impl KeyBindingAction {
             KeyBindingAction::ToggleConsole => "Toggle Console",
             KeyBindingAction::ToggleFullscreen => "Toggle Fullscreen",
             KeyBindingAction::ToggleDebugPanel => "Toggle Debug Panel",
+            // Panel management
+            KeyBindingAction::ToggleControls => "Toggle Controls",
+            KeyBindingAction::TogglePhysicsPanel => "Toggle Physics Panel",
+            KeyBindingAction::ToggleSensors => "Toggle Sensors",
+            KeyBindingAction::ToggleRendering => "Toggle Rendering",
+            KeyBindingAction::ToggleRecording => "Toggle Recording",
+            KeyBindingAction::ToggleHorusPanel => "Toggle HORUS Panel",
+            KeyBindingAction::ToggleHFramePanel => "Toggle HFrame Panel",
+            KeyBindingAction::ToggleViewModes => "Toggle View Modes",
+            KeyBindingAction::DockAllPanels => "Dock All Panels",
+            KeyBindingAction::DetachAllPanels => "Detach All Panels",
 
             // Simulation
             KeyBindingAction::SimulationPlay => "Play Simulation",
@@ -629,6 +662,17 @@ impl KeyBindingAction {
             KeyBindingAction::ToggleConsole => "Show/hide the console",
             KeyBindingAction::ToggleFullscreen => "Toggle fullscreen mode",
             KeyBindingAction::ToggleDebugPanel => "Show/hide the debug panel",
+            // Panel management
+            KeyBindingAction::ToggleControls => "Show/hide the controls panel",
+            KeyBindingAction::TogglePhysicsPanel => "Show/hide the physics panel",
+            KeyBindingAction::ToggleSensors => "Show/hide the sensors panel",
+            KeyBindingAction::ToggleRendering => "Show/hide the rendering panel",
+            KeyBindingAction::ToggleRecording => "Show/hide the recording panel",
+            KeyBindingAction::ToggleHorusPanel => "Show/hide the HORUS panel",
+            KeyBindingAction::ToggleHFramePanel => "Show/hide the HFrame tree panel",
+            KeyBindingAction::ToggleViewModes => "Show/hide the view modes panel",
+            KeyBindingAction::DockAllPanels => "Dock all floating panels",
+            KeyBindingAction::DetachAllPanels => "Detach all panels to floating windows",
 
             // Simulation
             KeyBindingAction::SimulationPlay => "Start the simulation",
@@ -701,6 +745,17 @@ impl KeyBindingAction {
             KeyBindingAction::ToggleConsole,
             KeyBindingAction::ToggleFullscreen,
             KeyBindingAction::ToggleDebugPanel,
+            // Panel management
+            KeyBindingAction::ToggleControls,
+            KeyBindingAction::TogglePhysicsPanel,
+            KeyBindingAction::ToggleSensors,
+            KeyBindingAction::ToggleRendering,
+            KeyBindingAction::ToggleRecording,
+            KeyBindingAction::ToggleHorusPanel,
+            KeyBindingAction::ToggleHFramePanel,
+            KeyBindingAction::ToggleViewModes,
+            KeyBindingAction::DockAllPanels,
+            KeyBindingAction::DetachAllPanels,
             // Simulation
             KeyBindingAction::SimulationPlay,
             KeyBindingAction::SimulationPause,
@@ -1373,6 +1428,47 @@ impl KeyBindingMap {
             KeyBinding::new(
                 KeyBindingAction::ToggleDebugPanel,
                 KeyCombination::key_only(KeyCode::F12),
+            ),
+            // Panel management
+            KeyBinding::new(
+                KeyBindingAction::ToggleControls,
+                KeyCombination::ctrl(KeyCode::Digit1),
+            ),
+            KeyBinding::new(
+                KeyBindingAction::TogglePhysicsPanel,
+                KeyCombination::ctrl(KeyCode::Digit2),
+            ),
+            KeyBinding::new(
+                KeyBindingAction::ToggleSensors,
+                KeyCombination::ctrl(KeyCode::Digit3),
+            ),
+            KeyBinding::new(
+                KeyBindingAction::ToggleRendering,
+                KeyCombination::ctrl(KeyCode::Digit4),
+            ),
+            KeyBinding::new(
+                KeyBindingAction::ToggleRecording,
+                KeyCombination::ctrl(KeyCode::Digit5),
+            ),
+            KeyBinding::new(
+                KeyBindingAction::ToggleHorusPanel,
+                KeyCombination::ctrl(KeyCode::Digit6),
+            ),
+            KeyBinding::new(
+                KeyBindingAction::ToggleHFramePanel,
+                KeyCombination::ctrl(KeyCode::Digit7),
+            ),
+            KeyBinding::new(
+                KeyBindingAction::ToggleViewModes,
+                KeyCombination::ctrl(KeyCode::Digit8),
+            ),
+            KeyBinding::new(
+                KeyBindingAction::DockAllPanels,
+                KeyCombination::ctrl_shift(KeyCode::KeyD),
+            ),
+            KeyBinding::new(
+                KeyBindingAction::DetachAllPanels,
+                KeyCombination::ctrl_shift(KeyCode::KeyF),
             ),
             // Simulation
             KeyBinding::new(

@@ -1640,7 +1640,10 @@ impl Scheduler {
                                 print_line(&format!("Initialized node '{}'", node_name));
                             }
                             Err(e) => {
-                                print_line(&format!("Failed to initialize node '{}': {}", node_name, e));
+                                print_line(&format!(
+                                    "Failed to initialize node '{}': {}",
+                                    node_name, e
+                                ));
                                 ctx.transition_to_error(format!("Initialization failed: {}", e));
                             }
                         }

@@ -161,11 +161,11 @@ pub fn render_physics_panel_ui(
     config: &mut PhysicsPanelConfig,
     physics_world: Option<&crate::physics::PhysicsWorld>,
 ) {
-    ui.heading("⚙ Physics");
+    ui.heading("Physics");
     ui.separator();
 
     // Gravity section
-    ui.collapsing("🌍 Gravity", |ui| {
+    ui.collapsing("Gravity", |ui| {
         ui.horizontal(|ui| {
             ui.label("X:");
             if ui
@@ -225,7 +225,7 @@ pub fn render_physics_panel_ui(
     });
 
     // Timestep section
-    ui.collapsing("⏱ Timestep", |ui| {
+    ui.collapsing("Timestep", |ui| {
         let hz = (1.0 / params.dt).round() as i32;
         ui.horizontal(|ui| {
             ui.label("Rate:");
@@ -263,7 +263,7 @@ pub fn render_physics_panel_ui(
     });
 
     // Solver section
-    ui.collapsing("🔧 Solver", |ui| {
+    ui.collapsing("Solver", |ui| {
         ui.horizontal(|ui| {
             ui.label("Velocity iterations:");
             if ui
@@ -303,7 +303,7 @@ pub fn render_physics_panel_ui(
 
     // CCD section
     if config.show_advanced {
-        ui.collapsing("💥 Continuous Collision Detection", |ui| {
+        ui.collapsing("Continuous Collision Detection", |ui| {
             if ui.checkbox(&mut params.ccd_enabled, "Enable CCD").changed() {
                 params.dirty = true;
             }
@@ -319,7 +319,7 @@ pub fn render_physics_panel_ui(
         });
 
         // Contact parameters
-        ui.collapsing("📞 Contact Parameters", |ui| {
+        ui.collapsing("Contact Parameters", |ui| {
             ui.horizontal(|ui| {
                 ui.label("Natural frequency:");
                 if ui
@@ -354,7 +354,7 @@ pub fn render_physics_panel_ui(
     if config.show_debug_stats {
         if let Some(world) = physics_world {
             ui.separator();
-            ui.collapsing("📊 Debug Stats", |ui| {
+            ui.collapsing("Debug Stats", |ui| {
                 ui.label(format!("Rigid bodies: {}", world.rigid_body_set.len()));
                 ui.label(format!("Colliders: {}", world.collider_set.len()));
                 ui.label(format!("Impulse joints: {}", world.impulse_joint_set.len()));
@@ -373,7 +373,10 @@ pub fn render_physics_panel_ui(
     // Apply button
     if params.dirty {
         ui.separator();
-        ui.colored_label(egui::Color32::YELLOW, "⚠ Parameters modified - click Apply");
+        ui.colored_label(
+            egui::Color32::YELLOW,
+            "[!] Parameters modified - click Apply",
+        );
         if ui.button("Apply Changes").clicked() {
             params.dirty = false;
             // The actual application happens in sync_physics_params_system

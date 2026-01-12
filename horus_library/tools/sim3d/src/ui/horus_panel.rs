@@ -72,9 +72,9 @@ impl TopicStatus {
 
     pub fn icon(&self) -> &'static str {
         match self {
-            TopicStatus::Connected => "●",
-            TopicStatus::Disconnected => "○",
-            TopicStatus::Error => "✗",
+            TopicStatus::Connected => "[+]",
+            TopicStatus::Disconnected => "[-]",
+            TopicStatus::Error => "[!]",
         }
     }
 }
@@ -171,7 +171,7 @@ fn render_robots_tab(
             .max_height(300.0)
             .show(ui, |ui| {
                 for (robot_name, hubs) in &horus_comm.robot_hubs {
-                    let header = format!("🤖 {}", robot_name);
+                    let header = format!("[ROBOT] {}", robot_name);
 
                     egui::CollapsingHeader::new(header)
                         .default_open(panel_config.expand_all)
@@ -331,9 +331,9 @@ fn render_all_topics_tab(
                 ui.horizontal(|ui| {
                     // Status indicator
                     let (icon, color) = if topic.is_active {
-                        ("●", egui::Color32::from_rgb(100, 200, 100))
+                        ("[+]", egui::Color32::from_rgb(100, 200, 100))
                     } else {
-                        ("○", egui::Color32::from_rgb(150, 150, 150))
+                        ("[-]", egui::Color32::from_rgb(150, 150, 150))
                     };
                     ui.colored_label(color, icon);
 
@@ -357,10 +357,14 @@ fn render_all_topics_tab(
                     // Subscribe/Unsubscribe button
                     if topic.message_type != MessageType::Unknown {
                         if is_subscribed {
-                            if ui.small_button("✖").on_hover_text("Unsubscribe").clicked() {
+                            if ui
+                                .small_button("[X]")
+                                .on_hover_text("Unsubscribe")
+                                .clicked()
+                            {
                                 unsubscribe_topic = Some(topic.name.clone());
                             }
-                        } else if ui.small_button("👁").on_hover_text("Subscribe").clicked() {
+                        } else if ui.small_button("[?]").on_hover_text("Subscribe").clicked() {
                             subscribe_topic = Some((topic.name.clone(), topic.message_type));
                         }
                     }
@@ -623,9 +627,9 @@ mod tests {
 
     #[test]
     fn test_topic_status() {
-        assert_eq!(TopicStatus::Connected.icon(), "●");
-        assert_eq!(TopicStatus::Disconnected.icon(), "○");
-        assert_eq!(TopicStatus::Error.icon(), "✗");
+        assert_eq!(TopicStatus::Connected.icon(), "[+]");
+        assert_eq!(TopicStatus::Disconnected.icon(), "[-]");
+        assert_eq!(TopicStatus::Error.icon(), "[!]");
     }
 
     #[test]

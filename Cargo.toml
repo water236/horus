@@ -15,8 +15,6 @@ members = [
     "horus_router",  # Router service
     "benchmarks",
     "horus_py",
-    # Plugins
-    "plugins/horus-imu-plugin",
 ]
 exclude = [
     ".horus",  # Exclude horus run temporary workspace

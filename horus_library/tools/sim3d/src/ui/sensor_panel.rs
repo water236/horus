@@ -46,22 +46,23 @@ impl SensorType {
         }
     }
 
-    pub fn icon(&self) -> &'static str {
+    /// Short abbreviation for display in compact UI
+    pub fn abbrev(&self) -> &'static str {
         match self {
-            SensorType::Camera => "📷",
-            SensorType::DepthCamera => "📐",
-            SensorType::RGBDCamera => "🎥",
-            SensorType::ThermalCamera => "🌡",
-            SensorType::Lidar3D => "📡",
-            SensorType::Lidar2D => "〰",
-            SensorType::IMU => "🧭",
-            SensorType::GPS => "🛰",
-            SensorType::ForceTorque => "💪",
-            SensorType::Tactile => "✋",
-            SensorType::Sonar => "🔊",
-            SensorType::Radar => "📻",
-            SensorType::Encoder => "🔄",
-            SensorType::EventCamera => "⚡",
+            SensorType::Camera => "[CAM]",
+            SensorType::DepthCamera => "[DEP]",
+            SensorType::RGBDCamera => "[RGBD]",
+            SensorType::ThermalCamera => "[THM]",
+            SensorType::Lidar3D => "[L3D]",
+            SensorType::Lidar2D => "[L2D]",
+            SensorType::IMU => "[IMU]",
+            SensorType::GPS => "[GPS]",
+            SensorType::ForceTorque => "[F/T]",
+            SensorType::Tactile => "[TAC]",
+            SensorType::Sonar => "[SON]",
+            SensorType::Radar => "[RAD]",
+            SensorType::Encoder => "[ENC]",
+            SensorType::EventCamera => "[EVT]",
         }
     }
 
@@ -182,7 +183,7 @@ pub fn render_sensor_panel_ui(
     settings: &mut SensorSettings,
     config: &mut SensorPanelConfig,
 ) {
-    ui.heading("📡 Sensors");
+    ui.heading("Sensors");
     ui.separator();
 
     // Global controls
@@ -226,7 +227,7 @@ pub fn render_sensor_panel_ui(
                 }
                 ui.separator();
                 for sensor_type in SensorType::all() {
-                    let label = format!("{} {}", sensor_type.icon(), sensor_type.name());
+                    let label = format!("{} {}", sensor_type.abbrev(), sensor_type.name());
                     if ui
                         .selectable_label(config.type_filter == Some(*sensor_type), label)
                         .clicked()
@@ -252,7 +253,7 @@ pub fn render_sensor_panel_ui(
                 }
 
                 let cfg = settings.type_defaults.get_mut(sensor_type).unwrap();
-                let header = format!("{} {}", sensor_type.icon(), sensor_type.name());
+                let header = format!("{} {}", sensor_type.abbrev(), sensor_type.name());
 
                 egui::CollapsingHeader::new(header)
                     .default_open(config.expand_all)

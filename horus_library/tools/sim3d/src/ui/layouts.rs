@@ -12,6 +12,13 @@ use std::path::PathBuf;
 #[cfg(feature = "visual")]
 use bevy_egui::{egui, EguiContexts};
 
+#[cfg(feature = "visual")]
+use super::dock::DockWorkspace;
+#[cfg(feature = "visual")]
+use super::panel_manager::PanelManager;
+#[cfg(feature = "visual")]
+use super::panel_state::{DockTabKey, FloatingPanelState, PanelAction};
+
 /// Layout presets for different workflows
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum LayoutPreset {
@@ -323,6 +330,14 @@ pub struct LayoutConfig {
     pub show_grid: bool,
     /// Show axes
     pub show_axes: bool,
+    /// State of floating panels (which panels are detached and their configs)
+    #[cfg(feature = "visual")]
+    #[serde(default)]
+    pub floating_panels: FloatingPanelState,
+    /// Hidden tabs (panels that are neither docked nor floating)
+    #[cfg(feature = "visual")]
+    #[serde(default)]
+    pub hidden_tabs: Vec<DockTabKey>,
 }
 
 impl Default for LayoutConfig {
@@ -348,6 +363,9 @@ impl LayoutConfig {
             show_debug_overlays: false,
             show_grid: true,
             show_axes: true,
+            #[cfg(feature = "visual")]
+            floating_panels: FloatingPanelState::default(),
+            hidden_tabs: Vec::new(),
         }
     }
 
@@ -388,6 +406,10 @@ impl LayoutConfig {
             show_debug_overlays: false,
             show_grid: true,
             show_axes: true,
+            #[cfg(feature = "visual")]
+            floating_panels: FloatingPanelState::default(),
+            #[cfg(feature = "visual")]
+            hidden_tabs: Vec::new(),
         }
     }
 
@@ -425,6 +447,10 @@ impl LayoutConfig {
             show_debug_overlays: true,
             show_grid: true,
             show_axes: true,
+            #[cfg(feature = "visual")]
+            floating_panels: FloatingPanelState::default(),
+            #[cfg(feature = "visual")]
+            hidden_tabs: Vec::new(),
         }
     }
 
@@ -452,6 +478,10 @@ impl LayoutConfig {
             show_debug_overlays: false,
             show_grid: false,
             show_axes: false,
+            #[cfg(feature = "visual")]
+            floating_panels: FloatingPanelState::default(),
+            #[cfg(feature = "visual")]
+            hidden_tabs: Vec::new(),
         }
     }
 
@@ -482,6 +512,10 @@ impl LayoutConfig {
             show_debug_overlays: false,
             show_grid: true,
             show_axes: true,
+            #[cfg(feature = "visual")]
+            floating_panels: FloatingPanelState::default(),
+            #[cfg(feature = "visual")]
+            hidden_tabs: Vec::new(),
         }
     }
 
@@ -661,6 +695,54 @@ impl LayoutManager {
         };
         self.switch_to_preset(presets[prev_idx]);
     }
+
+    /// Capture current panel state from PanelManager into the layout config
+    /// Call this before saving a layout to preserve floating panel state
+    #[cfg(feature = "visual")]
+    pub fn capture_panel_state(&mut self, panel_manager: &PanelManager) {
+        self.current_config.floating_panels = panel_manager.floating.clone();
+        self.current_config.hidden_tabs = panel_manager
+            .hidden_tabs()
+            .iter()
+            .map(DockTabKey::from)
+            .collect();
+    }
+
+    /// Apply layout's panel state to PanelManager and DockWorkspace
+    /// Call this after loading a layout to restore floating panel state
+    #[cfg(feature = "visual")]
+    pub fn apply_panel_state(
+        &self,
+        panel_manager: &mut PanelManager,
+        workspace: &mut DockWorkspace,
+    ) {
+        // First, dock all current floating panels
+        panel_manager.dock_all(workspace);
+
+        // Convert hidden tabs from DockTabKey to DockTab and hide them
+        for tab_key in &self.current_config.hidden_tabs {
+            if let Some(tab) = tab_key.to_dock_tab() {
+                panel_manager.queue_action(PanelAction::Close(tab));
+            }
+        }
+
+        // Then detach panels that should be floating according to the layout
+        for tab_key in self.current_config.floating_panels.floating_tab_keys() {
+            if let Some(tab) = tab_key.to_dock_tab() {
+                panel_manager.queue_action(PanelAction::Detach(tab));
+            }
+        }
+    }
+
+    /// Get the current layout configuration
+    pub fn current_config(&self) -> &LayoutConfig {
+        &self.current_config
+    }
+
+    /// Get mutable access to the current layout configuration
+    pub fn current_config_mut(&mut self) -> &mut LayoutConfig {
+        &mut self.current_config
+    }
 }
 
 /// Event for layout changes
@@ -704,7 +786,74 @@ pub fn layout_hotkey_system(
     }
 }
 
-/// System to handle layout events
+/// System to handle layout events (with panel state sync for visual builds)
+#[cfg(feature = "visual")]
+pub fn handle_layout_events(
+    mut events: EventReader<LayoutEvent>,
+    mut manager: ResMut<LayoutManager>,
+    mut panel_manager: ResMut<PanelManager>,
+    mut workspace: ResMut<DockWorkspace>,
+) {
+    for event in events.read() {
+        match event {
+            LayoutEvent::SwitchPreset(preset) => {
+                manager.switch_to_preset(*preset);
+                manager.apply_panel_state(&mut panel_manager, &mut workspace);
+                info!("Switched to layout preset: {}", preset.name());
+            }
+            LayoutEvent::SwitchCustom(name) => {
+                if manager.switch_to_custom(name) {
+                    manager.apply_panel_state(&mut panel_manager, &mut workspace);
+                    info!("Switched to custom layout: {}", name);
+                } else {
+                    warn!("Custom layout not found: {}", name);
+                }
+            }
+            LayoutEvent::SaveCustom(name) => {
+                // Capture current panel state before saving
+                manager.capture_panel_state(&panel_manager);
+                manager.save_custom_layout(name.clone());
+                info!("Saved custom layout: {}", name);
+            }
+            LayoutEvent::DeleteCustom(name) => {
+                if manager.delete_custom_layout(name) {
+                    info!("Deleted custom layout: {}", name);
+                } else {
+                    warn!("Custom layout not found: {}", name);
+                }
+            }
+            LayoutEvent::TogglePanel(panel_name) => {
+                manager.current_layout_mut().toggle_panel(panel_name);
+                info!("Toggled panel: {}", panel_name);
+            }
+            LayoutEvent::ResetLayout => {
+                let preset = manager.current_preset;
+                manager.switch_to_preset(preset);
+                manager.apply_panel_state(&mut panel_manager, &mut workspace);
+                info!("Reset layout to preset defaults");
+            }
+            LayoutEvent::ExportLayouts(path) => {
+                // Capture current panel state before exporting
+                manager.capture_panel_state(&panel_manager);
+                if let Err(e) = manager.save_to_file(path) {
+                    error!("Failed to export layouts: {}", e);
+                } else {
+                    info!("Exported layouts to: {:?}", path);
+                }
+            }
+            LayoutEvent::ImportLayouts(path) => {
+                if let Err(e) = manager.load_from_file(path) {
+                    error!("Failed to import layouts: {}", e);
+                } else {
+                    info!("Imported layouts from: {:?}", path);
+                }
+            }
+        }
+    }
+}
+
+/// System to handle layout events (non-visual builds - no panel state sync)
+#[cfg(not(feature = "visual"))]
 pub fn handle_layout_events(
     mut events: EventReader<LayoutEvent>,
     mut manager: ResMut<LayoutManager>,

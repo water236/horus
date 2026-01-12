@@ -28,6 +28,9 @@ use crate::ui::sensor_panel::{render_sensor_panel_ui, SensorPanelConfig, SensorS
 use crate::ui::stats_panel::{render_stats_ui, FrameTimeBreakdown, SimulationStats};
 use crate::ui::view_modes::{render_view_modes_ui, CurrentViewMode};
 
+#[cfg(feature = "visual")]
+use crate::ui::panel_state::PanelAction;
+
 /// Tab identifiers for the dock system
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DockTab {
@@ -170,6 +173,9 @@ pub struct SimDockViewer<'a> {
     pub pending_events: Vec<SimulationEvent>,
     /// Collected events from recording tab
     pub pending_recording_events: Vec<RecordingEvent>,
+    /// Collected panel actions (detach, close, etc.)
+    #[cfg(feature = "visual")]
+    pub pending_panel_actions: Vec<PanelAction>,
 }
 
 impl TabViewer for SimDockViewer<'_> {
@@ -273,6 +279,40 @@ impl TabViewer for SimDockViewer<'_> {
 
     fn on_close(&mut self, _tab: &mut Self::Tab) -> bool {
         true // Allow closing
+    }
+
+    /// Context menu for tabs - provides detach/close options
+    #[cfg(feature = "visual")]
+    fn context_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        tab: &mut Self::Tab,
+        _surface: egui_dock::SurfaceIndex,
+        _node: NodeIndex,
+    ) {
+        // Detach to floating window
+        if ui
+            .button("Detach to Window")
+            .on_hover_text("Pop this panel out as a floating window")
+            .clicked()
+        {
+            self.pending_panel_actions
+                .push(PanelAction::Detach(tab.clone()));
+            ui.close_menu();
+        }
+
+        ui.separator();
+
+        // Close tab
+        if ui
+            .button("Close Tab")
+            .on_hover_text("Close this tab (can be reopened from Panels menu)")
+            .clicked()
+        {
+            self.pending_panel_actions
+                .push(PanelAction::Close(tab.clone()));
+            ui.close_menu();
+        }
     }
 }
 
@@ -589,6 +629,7 @@ pub fn dock_ui_system(
     mut console: ResMut<ConsoleMessages>,
     mut layout_events: EventWriter<ChangeDockLayoutEvent>,
     mut sim_events: EventWriter<SimulationEvent>,
+    mut panel_manager: ResMut<super::panel_manager::PanelManager>,
     // Bundled resources (reduces parameter count below Bevy's 16 limit)
     mut core_ui: CoreUiResources,
     mut panel_resources: PanelResources,
@@ -750,6 +791,8 @@ pub fn dock_ui_system(
         console_messages: &mut console.messages,
         pending_events: Vec::new(),
         pending_recording_events: Vec::new(),
+        #[cfg(feature = "visual")]
+        pending_panel_actions: Vec::new(),
     };
 
     // Render dock area in a side panel (left side) to preserve viewport
@@ -774,6 +817,16 @@ pub fn dock_ui_system(
     // Send any pending recording events
     for event in viewer.pending_recording_events {
         panel_resources.recording_events.send(event);
+    }
+
+    // Queue any pending panel actions (from context menu)
+    for action in viewer.pending_panel_actions {
+        panel_manager.queue_action(action);
+    }
+
+    // Process panel actions immediately
+    if panel_manager.has_pending_actions() {
+        let _processed = panel_manager.process_actions(&mut workspace);
     }
 }
 
